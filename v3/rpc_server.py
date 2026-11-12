@@ -505,8 +505,25 @@ class RpcServer:
             if t is None:
                 raise RpcError(1, "GID not found")
             return _norm_struct(t)["files"]
-        if method in ("aria2.getPeers", "aria2.getServers"):
-            return []
+        if method == "aria2.getServers":
+            t = b.rpc_struct(str(params[0]) if params else "")
+            if t is None:
+                raise RpcError(1, "GID not found")
+            if t.get("status") != "active":
+                return []
+            u = _norm_struct(t)
+            uris = [x.get("uri") for x in (u["files"][0].get("uris") or []) if x.get("uri")]
+            sp = str(u.get("downloadSpeed") or 0)
+            return [{"index": "1", "servers": [{"uri": x, "currentUri": x, "downloadSpeed": sp} for x in uris[:8]]}]
+        if method == "aria2.getPeers":
+            t = b.rpc_struct(str(params[0]) if params else "")
+            if t is None:
+                raise RpcError(1, "GID not found")
+            fn = getattr(b, "rpc_peers", None)
+            try:
+                return list(fn(str(params[0]))) if fn else []
+            except Exception:
+                return []
         if method == "aria2.getOption":
             t = b.rpc_struct(str(params[0]) if params else "")
             if t is None:
