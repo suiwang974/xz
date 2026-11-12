@@ -105,6 +105,15 @@ PAGES = {
     "s19": '<a id=go href="/f/s19_pkg2.deb">deb 包（类型已删）</a>',
     "s20": '<a id=go href="/gen/s20" download="s20_attr.epub">download 属性</a>',
     "s21": '<a id=go href="/go/s21">两跳 + Cookie</a>',
+    "s22": '<a id=go href="/gh/s22">GitHub Release 式（跳对象存储，签名参数，文件名在响应头）</a>',
+    "s23": '<a id=go href="/dl?id=s23">文件名带空格的附件</a>',
+    "s24": '<a id=go href="/f/s24_clip.mp4">mp4 直链</a>',
+    "s25": '<a id=go href="/f/s25_setup.exe">exe 安装包</a>',
+    "s26": '<a id=go href="/both/s26_both.zip">既要 Cookie 又要 Referer</a>',
+    "s27": '<a id=go href="/f/s27_q.zip?token=abc&expires=1893456000">带签名查询串的直链</a>',
+    "s28": '<a id=go href="/dl?id=s28">只有 filename*= 的中文附件</a>',
+    "s29": '<a id=go href="/f/s29_%E4%B8%AD%E6%96%87.zip">百分号编码的中文路径</a>',
+    "s30": '<a id=go href="/nohead/s30_nohead.zip">服务器不支持 HEAD（405）</a>',
 }
 
 
@@ -154,16 +163,28 @@ class H(http.server.BaseHTTPRequestHandler):
             sid = path[3:].split(".")[0]
             if sid == "plain":
                 return self._send(200, page("plain", "<p>只是网页</p>"))
-            extra = {"Set-Cookie": "sdltok=abc123; Path=/"} if sid in ("s04", "s21") else None
+            extra = {"Set-Cookie": "sdltok=abc123; Path=/"} if sid in ("s04", "s21", "s26") else None
             return self._send(200, page(sid, PAGES.get(sid, "")), extra=extra)
         if path.startswith("/go/"):
             return self._send(302, b"", extra={"Location": "/hop/" + path[4:]})
         if path.startswith("/hop/"):
             return self._send(302, b"", extra={"Location": FINAL[path[5:]]})
         if path.startswith("/f/"):
-            name = path[3:]
+            name = urllib.parse.unquote(path[3:])
             ct = "application/zip" if name.endswith(".zip") else "application/octet-stream"
             return self._file(FILES[name], ct)
+        if path == "/gh/s22":     # GitHub Release：先 302 到对象存储，URL 里没有文件名，名字在 Content-Disposition
+            return self._send(302, b"", extra={"Location": "/obj/s22?response-content-disposition=attachment%3B%20filename%3Dtool-1.2.3-win64.zip&X-Amz-Signature=abc"})
+        if path == "/obj/s22":
+            return self._file(FILES["s22"], "application/octet-stream", 'attachment; filename=tool-1.2.3-win64.zip')
+        if path.startswith("/both/"):
+            if "sdltok=abc123" not in (self.headers.get("Cookie") or "") or "/s/s26" not in (self.headers.get("Referer") or ""):
+                return self._send(403, b"need cookie+referer", "text/plain")
+            return self._file(FILES[path[6:]], "application/zip")
+        if path.startswith("/nohead/"):
+            if self.command == "HEAD":
+                return self._send(405, b"", "text/plain")
+            return self._file(FILES[path[8:]], "application/zip")
         if path.startswith("/need/"):
             if "sdltok=abc123" not in (self.headers.get("Cookie") or ""):
                 return self._send(403, b"need cookie", "text/plain")
@@ -176,6 +197,10 @@ class H(http.server.BaseHTTPRequestHandler):
             i = (q.get("id") or [""])[0]
             if i == "s03":
                 return self._file(FILES["s03"], "application/octet-stream", 'attachment; filename="s03_cdfile.dat"')
+            if i == "s23":
+                return self._file(FILES["s23"], "application/octet-stream", 'attachment; filename="s23 my report final.zip"')
+            if i == "s28":
+                return self._file(FILES["s28"], "application/octet-stream", "attachment; filename*=UTF-8''s28" + urllib.parse.quote("文件") + ".zip")
             if i == "s13":
                 return self._file(FILES["s13"], "application/pdf",
                                   "attachment; filename=\"s13.pdf\"; filename*=UTF-8''" + urllib.parse.quote(CN_NAME))
@@ -219,9 +244,10 @@ def main():
     os.makedirs(os.path.join(DATA, "browser_dl"), exist_ok=True)
     for name in ["s01_direct.zip", "s02_redirect.7z", "s04_cookie.zip", "s05_referer.zip", "s07_location.rar", "s08_iframe.iso",
                  "s10_alt.zip", "s11_black.zip", "s12_offline.zip", "s15_pkg.deb", "s17_a.zip", "s17_b.zip", "s17_c.zip",
-                 "s19_pkg2.deb", "s21_chain.zip"]:
+                 "s19_pkg2.deb", "s21_chain.zip", "s24_clip.mp4", "s25_setup.exe", "s26_both.zip", "s27_q.zip",
+                 "s29_中文.zip", "s30_nohead.zip"]:
         mk(name)
-    for k in ["s03", "s06", "s09", "s13", "s14", "s16", "s20"]:
+    for k in ["s03", "s06", "s09", "s13", "s14", "s16", "s20", "s22", "s23", "s28"]:
         mk(k)
     TOK2KEY = {k.split("_")[0]: k for k in FILES}          # s01 -> s01_direct.zip / s03 -> s03
 
@@ -371,6 +397,15 @@ def main():
 
             expect_take("s20", "页面内 <a download=\"x.epub\" href=无后缀> 接管", name="s20_attr.epub")
             expect_take("s21", "302 两跳 + 终点要 Cookie（兜底路径带真实 Cookie）接管")
+            expect_take("s22", "GitHub Release 式：302 到对象存储、文件名只在 Content-Disposition，接管且名字正确", name="tool-1.2.3-win64.zip")
+            expect_take("s23", "附件文件名带空格接管且名字正确", name="s23 my report final.zip")
+            expect_take("s24", "mp4 直链接管")
+            expect_take("s25", "exe 安装包接管")
+            expect_take("s26", "既要 Cookie 又要 Referer 的链接接管")
+            expect_take("s27", "带签名查询串（token/expires）的直链接管")
+            expect_take("s28", "只有 filename*= 的中文附件接管且名字正确", name="s28文件.zip")
+            expect_take("s29", "百分号编码的中文路径接管", key="s29_中文.zip")
+            expect_take("s30", "服务器不支持 HEAD（405）仍接管", key="s30_nohead.zip")
 
             c21 = [s for s in SEEN if s[0] == "/need/s21_chain.zip" and "sdltok=abc123" in s[1]]
             check("S21 服务器至少收到 2 次带 Cookie 的终点请求（浏览器 1 + 内核 ≥1）", len(c21) >= 2, c21)
@@ -395,7 +430,7 @@ def main():
             core.terminate()
         srv.shutdown()
 
-    take_ids = {"s01", "s02", "s03", "s04", "s05", "s06", "s07", "s08", "s09", "s13", "s14", "s15", "s16", "s17", "s20", "s21"}
+    take_ids = {"s01", "s02", "s03", "s04", "s05", "s06", "s07", "s08", "s09", "s13", "s14", "s15", "s16", "s17", "s20", "s21", "s22", "s23", "s24", "s25", "s26", "s27", "s28", "s29", "s30"}
     tk = [s for s in SCEN if s[0] in take_ids]
     ps = [s for s in SCEN if s[0] not in take_ids]
     n_ok = sum(1 for s in SCEN if s[2])
@@ -405,7 +440,7 @@ def main():
     print("附加检查：%d/%d PASS" % (c_ok, len(CHECKS)))
     with open(os.path.join(DATA, "result.json"), "w", encoding="utf-8") as f:
         json.dump({"scenarios": [s[:3] for s in SCEN], "checks": [c[:2] for c in CHECKS]}, f, ensure_ascii=False, indent=1)
-    sys.exit(0 if n_ok == len(SCEN) and len(SCEN) >= 15 and c_ok == len(CHECKS) else 1)
+    sys.exit(0 if n_ok == len(SCEN) and len(SCEN) >= 30 and c_ok == len(CHECKS) else 1)
 
 
 if __name__ == "__main__":

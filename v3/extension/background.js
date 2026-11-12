@@ -7,13 +7,37 @@
  * 桌面端凭 rpc_confirm_dialog 决定弹确认窗还是静默直下；插件不做这个决策。
  */
 
+// ================= A16：默认接管文件类型清单（对标 IDM，按类分组；设置 › 高级 里可改）=================
+const IDM_EXT_GROUPS = {
+  "压缩包": "zip rar 7z tar gz tgz gzip bz2 tbz tbz2 xz txz lz lzma lzh lha z zst cab arj ace sit sitx sea uue r00 r01 001",
+  "安装包": "exe msi msu msp msix msixbundle appx appxbundle apk xapk apks aab ipa deb rpm dmg pkg mpkg appimage snap flatpak run jar crx xpi whl vsix nupkg",
+  "镜像": "iso img bin vhd vhdx vmdk ova qcow2 wim esd gho nrg mdf mds cue",
+  "视频": "mp4 m4v mkv webm mov avi wmv flv f4v ts mts m2ts mpg mpeg mpe vob 3gp 3g2 ogv rm rmvb asf divx qt m3u8 mpd",
+  "音频": "mp3 m4a aac flac wav wma ogg oga opus ape aif aiff amr mid midi ra mka dsf dff",
+  "文档": "pdf epub mobi azw azw3 djvu doc docx xls xlsx ppt pptx pps ppsx odt ods odp rtf chm cbr cbz caj",
+  "其他": "torrent psd tif tiff gguf safetensors ckpt",
+};
+const IDM_DEFAULT_EXTS = Array.from(new Set(Object.values(IDM_EXT_GROUPS).join(" ").split(/\s+/).filter(Boolean)));
+function parseExtList(s) {
+  return Array.from(new Set(String(s || "").toLowerCase().split(/[\s,，;；、]+/).map((x) => x.replace(/^\*?\./, "").trim()).filter(Boolean)));
+}
+function parseHostList(s) {
+  return String(s || "").toLowerCase().split(/[\s,，;；]+/).map((x) => x.trim()).filter(Boolean);
+}
+self.__sdlIdmExts = IDM_DEFAULT_EXTS;
+
 const DEFAULTS = {
+  takeoverExts: IDM_DEFAULT_EXTS.join(" "),   // A16：扩展自己的接管类型（与内核 takeover_exts 取并集；清空=只按内核）
+  siteWhitelist: "",    // A16：总是接管的站点（与内核名单取并集）
+  siteBlacklist: "",    // A16：从不接管的站点（与内核名单取并集）
+  headerJudge: true,    // A16：按响应头判定（Content-Disposition: attachment / 非网页 Content-Type）
   enabled: true,        // 接管总开关
   port: 6800,           // SniffDL 本地 RPC 端口
   token: "",            // 可选鉴权 token
   minSizeMB: 0,         // 只接管 ≥ 此大小的文件（0=不限）
   skipInline: true,     // 跳过浏览器内联预览（图片/视频直接打开的那种）
   onlyExtensions: "",   // 逗号分隔的白名单扩展名（空=全部类型都接管）
+  autoLaunch: true,     // 推送/接管时连不上内核 → 经 Native Messaging 自动拉起 SniffDL（需已注册 com.sniffdl.host）
   syncNetdiskCookies: true, // 0.6.0：把网盘登录 Cookie 同步给桌面端（只进内存），手动粘贴直链也能下
 };
 
@@ -34,22 +58,37 @@ function rpcUrl(c) {
   return `http://127.0.0.1:${c.port}/jsonrpc`;
 }
 
+// 用户主动动作（推送/接管/批量）连不上内核时，经 Native Messaging 自动拉起 SniffDL 再重试一次；
+// 探活/读规则这类后台调用不拉起（不能因为开了浏览器就把用户特意关掉的下载器带起来）。拉起失败 60 秒内不再试。
+const AUTO_LAUNCH_METHODS = new Set(["sniffdl.intercept", "sniffdl.grabber.push", "sniffdl.addDirect", "aria2.addUri"]);
+let launchFailAt = 0;
+
 async function callRpc(method, params) {
   const c = await cfg();
   const p = Array.isArray(params) ? params.slice() : [];
   if (c.token) p.unshift("token:" + c.token);
+  const doFetch = () => fetch(rpcUrl(c), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", method, params: p, id: Date.now() }),
+  });
   let res;
   try {
-    res = await fetch(rpcUrl(c), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", method, params: p, id: Date.now() }),
-    });
+    res = await doFetch();
   } catch (e) {
-    // 0.7.0：连不上 = 内核没运行（或端口不对），给一句人话而不是 "Failed to fetch"
-    const er = new Error("SniffDL 没有运行（连不上 127.0.0.1:" + c.port + "）：请先打开 SniffDL，或在扩展弹窗里核对端口");
-    er.offline = true;
-    throw er;
+    let again = null;
+    if (AUTO_LAUNCH_METHODS.has(method) && c.autoLaunch !== false && Date.now() - launchFailAt > 60000) {
+      const r = await launchSniffDL(c.port);
+      if (r && r.ok) { try { again = await doFetch(); } catch (e2) { again = null; } }
+      else launchFailAt = Date.now();
+    }
+    if (again) res = again;
+    else {
+      // 0.7.0：连不上 = 内核没运行（或端口不对），给一句人话而不是 "Failed to fetch"
+      const er = new Error("SniffDL 没有运行（连不上 127.0.0.1:" + c.port + "）：请先打开 SniffDL，或在扩展弹窗里核对端口");
+      er.offline = true;
+      throw er;
+    }
   }
   const j = await res.json();
   if (j.error) throw new Error(j.error.message || "RPC error");
@@ -129,7 +168,7 @@ async function getRules(force) {
   let mode = "legacy", rules = null, error = "";
   try {
     const r = await callRpc("sniffdl.takeoverRules", []);
-    if (r && r.ok) { mode = "v3"; rules = r; }
+    if (r && r.ok) { mode = "v3"; rules = mergeRules(r, await cfg()); }
   } catch (e) {
     if (e && e.offline) { mode = "offline"; error = e.message; }
   }
@@ -141,6 +180,103 @@ async function getRules(force) {
   } catch (e) {}
   return rulesCache;
 }
+// A16：内核规则 ∪ 扩展自己的设置（类型清单/站点名单），再加 header_judge
+function mergeRules(r, c) {
+  const uni = (a, b) => Array.from(new Set([...(a || []), ...(b || [])]));
+  return Object.assign({}, r, {
+    kernel_exts: r.exts || [],
+    exts: uni(r.exts, parseExtList(c.takeoverExts)),
+    whitelist: uni(r.whitelist, parseHostList(c.siteWhitelist)),
+    blacklist: uni(r.blacklist, parseHostList(c.siteBlacklist)),
+    header_judge: c.headerJudge !== false,
+  });
+}
+try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local") rulesCache.t = 0; }); } catch (e) {}
+
+// A16：按响应头判定。网页类 Content-Type（会被浏览器直接显示的）不算下载
+const WEB_CT = /^(text\/(html|plain|css|javascript|xml)|application\/(xhtml\+xml|xml|json|javascript|x-javascript|ld\+json|manifest\+json)|image\/(png|jpe?g|gif|webp|svg\+xml|x-icon|vnd\.microsoft\.icon|avif|bmp)|font\/)/i;
+function isWebCt(ct) { ct = String(ct || "").split(";")[0].trim().toLowerCase(); return !ct || WEB_CT.test(ct); }
+function isAttachment(cd) { return /^\s*attachment/i.test(String(cd || "")); }
+// Content-Disposition 取文件名：filename*=UTF-8''…（RFC 5987）优先；filename="…" 兼容原始 UTF-8 / 百分号编码
+function cdFilename(cd) {
+  cd = String(cd || "");
+  if (!cd) return "";
+  let m = /filename\*\s*=\s*([^';]*)'[^']*'([^;]+)/i.exec(cd);
+  if (m) { try { return decodeURIComponent(m[2].trim().replace(/^"|"$/g, "")); } catch (e) {} }
+  m = /filename\s*=\s*"([^"]*)"/i.exec(cd) || /filename\s*=\s*([^;]+)/i.exec(cd);
+  if (!m) return "";
+  let v = m[1].trim();
+  if (/[\u0080-\u00ff]/.test(v) && !/[\u0100-\uffff]/.test(v)) { try { v = decodeURIComponent(escape(v)); } catch (e) {} }  // latin1 看到的 UTF-8 字节
+  if (/%[0-9a-f]{2}/i.test(v)) { try { v = decodeURIComponent(v); } catch (e) {} }
+  return v.split(/[\\/]/).pop();
+}
+function extOfName(n) { const m = String(n || "").toLowerCase().match(/\.([a-z0-9]{1,8})$/); return m ? m[1] : ""; }
+self.__sdlCdFilename = cdFilename;
+
+// ---- A16：导航/子框架/下载请求的响应头与跳转链（onCreated 兜底接管要用：tabId、Referer、Cookie、CD、CT）----
+// DownloadItem 本身不带 tabId，靠这里按 URL 反查发起标签；302 多跳按 requestId 串起来。
+const navMem = new Map();     // url -> {tabId, frameId, type, ct, cd, len, chain, req, ts}
+const navReq = new Map();     // requestId -> {req, chain}
+function navPut(url, rec) {
+  navMem.set(url, rec);
+  while (navMem.size > 80) navMem.delete(navMem.keys().next().value);
+}
+function navFind(...urls) {
+  const now = Date.now();
+  for (const u of urls) {
+    if (!u) continue;
+    const h = navMem.get(u);
+    if (h && now - h.ts < 2 * 60 * 1000) return h;
+  }
+  // 跳转链里出现过这个 URL（item.url 是首跳）
+  for (const u of urls) {
+    if (!u) continue;
+    for (const h of Array.from(navMem.values()).reverse()) if (now - h.ts < 2 * 60 * 1000 && (h.chain || []).includes(u)) return h;
+  }
+  return null;
+}
+try {
+  const flt = { urls: ["http://*/*", "https://*/*"], types: ["main_frame", "sub_frame", "other", "object"] };
+  chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
+    try {
+      const h = {};
+      for (const x of d.requestHeaders || []) {
+        if (!x || !x.name || x.value == null || SKIP_CAPTURE.test(x.name) || /^sec-/i.test(x.name)) continue;
+        h[x.name] = x.value;
+      }
+      const o = navReq.get(d.requestId) || { chain: [] };
+      o.req = h;
+      if (!o.chain.length || o.chain[o.chain.length - 1] !== d.url) o.chain.push(d.url);
+      navReq.set(d.requestId, o);
+      while (navReq.size > 200) navReq.delete(navReq.keys().next().value);
+    } catch (e) {}
+  }, flt, ["requestHeaders", "extraHeaders"]);
+  chrome.webRequest.onBeforeRedirect.addListener((d) => {
+    try {
+      const o = navReq.get(d.requestId) || { chain: [d.url] };
+      if (d.redirectUrl && o.chain[o.chain.length - 1] !== d.redirectUrl) o.chain.push(d.redirectUrl);
+      navReq.set(d.requestId, o);
+    } catch (e) {}
+  }, flt);
+  chrome.webRequest.onHeadersReceived.addListener((d) => {
+    try {
+      if (d.statusCode >= 300 && d.statusCode < 400) return;
+      let ct = "", cd = "", len = 0;
+      for (const x of d.responseHeaders || []) {
+        const n = (x.name || "").toLowerCase();
+        if (n === "content-type") ct = x.value || "";
+        else if (n === "content-disposition") cd = x.value || "";
+        else if (n === "content-length") len = parseInt(x.value, 10) || 0;
+      }
+      // 只记"像下载"的响应，普通网页不占位
+      if (!isAttachment(cd) && isWebCt(ct) && !extOfName(new URL(d.url).pathname)) return;
+      const o = navReq.get(d.requestId) || { chain: [d.url] };
+      navPut(d.url, { tabId: d.tabId, frameId: d.frameId, type: d.type, ct, cd, len, chain: o.chain.slice(), req: o.req || {},
+                      ts: Date.now(), initiator: d.initiator || "" });
+    } catch (e) {}
+  }, flt, ["responseHeaders", "extraHeaders"]);
+} catch (e) { try { console.warn("[SniffDL] 导航响应头记录注册失败", e); } catch (_) {} }
+
 function hostOf(u) { try { return new URL(u).hostname.toLowerCase(); } catch (e) { return ""; } }
 function ruleHostIn(host, list) {
   host = (host || "").toLowerCase();
@@ -151,17 +287,31 @@ function ruleHostIn(host, list) {
   });
 }
 // 按内核规则判定：{take, why}
-function judgeByRules(r, url, pageUrl, size) {
+// A16：extra = {filename, ct, cd, urls:[跳转链], hostsExtra:[…]} → 除了 URL 后缀，也按文件名后缀与响应头判定
+function judgeByRules(r, url, pageUrl, size, extra) {
+  extra = extra || {};
   if (!r || !r.enabled) return { take: false, why: "内核设置里关掉了接管" };
-  const hosts = [hostOf(url), hostOf(pageUrl)];
+  const hosts = [hostOf(url), hostOf(pageUrl), ...(extra.urls || []).map(hostOf)].filter(Boolean);
   if (hosts.some((h) => ruleHostIn(h, r.blacklist))) return { take: false, why: "站点在「从不接管」名单" };
   const white = hosts.some((h) => ruleHostIn(h, r.whitelist));
   if (white) return { take: true, why: "站点在「总是接管」名单" };
-  const ext = extFromUrl(url);
-  if ((r.exts || []).length && !(r.exts || []).includes(ext)) return { take: false, why: "扩展名 ." + (ext || "?") + " 不在接管列表" };
+  const exts = [extFromUrl(url), extOfName(extra.filename), ...(extra.urls || []).map(extFromUrl)].filter(Boolean);
+  const list = r.exts || [];
+  const extHit = !list.length || exts.some((e) => list.includes(e));
+  let hdrHit = false, hdrWhy = "";
+  if (!extHit && r.header_judge !== false && (extra.ct || extra.cd)) {
+    const TEXTY = ["htm", "html", "shtml", "xhtml", "php", "asp", "aspx", "jsp", "jspx", "cfm", "cgi", "do", "action"];
+    const nameExt = extOfName(extra.filename);
+    // 有"真"后缀（不算 php/asp 这类脚本页后缀）却不在清单 = 用户在设置里没要这个类型 → 只认附件头，不按 Content-Type 硬抢
+    const realExt = exts.some((e) => !TEXTY.includes(e));
+    if (isAttachment(extra.cd) && (!nameExt || !TEXTY.includes(nameExt) || !isWebCt(extra.ct))) { hdrHit = true; hdrWhy = "Content-Disposition: attachment"; }
+    else if (!realExt && !isWebCt(extra.ct)) { hdrHit = true; hdrWhy = "Content-Type " + String(extra.ct).split(";")[0]; }
+  }
+  if (!extHit && !hdrHit) return { take: false, why: "扩展名 ." + (exts[0] || "?") + " 不在接管列表" };
   if (r.min_kb > 0 && size > 0 && size < r.min_kb * 1024) return { take: false, why: "小于 " + r.min_kb + " KB" };
-  return { take: true, why: "" };
+  return { take: true, why: hdrWhy };
 }
+self.__sdlJudge = judgeByRules;
 // 用户按 Alt 点 / 内核离线交回浏览器的下载：onCreated 不再抢（按标签 5 秒 + 按 URL）
 const bypassUrls = new Map();
 async function markBypass(tabId, url) {
@@ -214,11 +364,11 @@ async function handleClickDl(msg, tab) {
   if (rc.mode === "offline") { notifyOffline(rc.error); await backToBrowser(); return { ok: false, offline: true, error: rc.error }; }
   if (rc.mode !== "v3") return null;   // 旧桌面端：调用方走 0.6.0 网页卡
   let size = 0;
-  const j = judgeByRules(rc.rules, url, pageUrl, 0);
+  const j = judgeByRules(rc.rules, url, pageUrl, 0, { filename: msg.filename || "" });
   if (j.take && rc.rules.min_kb > 0 && !ruleHostIn(hostOf(url), rc.rules.whitelist) && !ruleHostIn(hostOf(pageUrl), rc.rules.whitelist)) {
     try { const h = await fetch(url, { method: "HEAD" }); size = Number(h.headers.get("content-length") || 0); } catch (e) {}
   }
-  const j2 = size ? judgeByRules(rc.rules, url, pageUrl, size) : j;
+  const j2 = size ? judgeByRules(rc.rules, url, pageUrl, size, { filename: msg.filename || "" }) : j;
   if (!j2.take) { await backToBrowser(); return { ok: true, taken: false, why: j2.why }; }
   try {
     const r = await v3Take({ url, filename: msg.filename || "", referer: pageUrl, size, source: "chip" }, true, rc.rules);
@@ -523,65 +673,187 @@ function hasRealFileExt(item) {
   } catch (e) { return false; }
 }
 
-chrome.downloads.onCreated.addListener(async (item) => {
+// A16：标签反查——DownloadItem 不带 tabId：先按导航记录，再按 POST 记录，最后按 referrer 匹配标签 / 当前活动标签
+async function resolveTab(item, nav) {
+  if (item.tabId != null && item.tabId >= 0) return item.tabId;   // 旧版 Chrome/测试桩
+  if (nav && nav.tabId != null && nav.tabId >= 0) return nav.tabId;
+  const pt = postTab(item.url); if (pt != null) return pt;
   try {
-    try { console.log('[SniffDL] onCreated', item.url, 'tab=' + item.tabId, 'state=' + item.state, 'size=' + item.totalBytes, 'mime=' + item.mime); } catch (e) {}
+    if (item.referrer) {
+      const ts = await chrome.tabs.query({});
+      const hit = ts.find((t) => t.url === item.referrer) || ts.find((t) => { try { return new URL(t.url).origin === new URL(item.referrer).origin && t.active; } catch (e) { return false; } });
+      if (hit) return hit.id;
+    }
+    const [t] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (t && t.id != null) return t.id;
+  } catch (e) {}
+  return -1;
+}
+
+const hintMem = new Map();    // url -> {filename, ts}：page_hook 报来的 <a download> 名字
+function hintName(...urls) {
+  for (const u of urls) { const h = u && hintMem.get(u); if (h && Date.now() - h.ts < 60000 && h.filename) return h.filename; }
+  return "";
+}
+const takenIds = new Set();
+self.__sdlLastDecision = [];   // 测试/排障：最近 30 条 onCreated 判定
+function logDecision(item, d) {
+  try {
+    self.__sdlLastDecision.push(Object.assign({ id: item.id, url: item.url, finalUrl: item.finalUrl, t: Date.now() }, d));
+    while (self.__sdlLastDecision.length > 30) self.__sdlLastDecision.shift();
+    console.log("[SniffDL] 下载判定", d.take ? "接管" : "放行", d.why || "", item.finalUrl || item.url);
+  } catch (e) {}
+}
+
+// A16：判定放在 onDeterminingFilename 里做——此刻浏览器已按 Content-Disposition / download 属性算好文件名（含中文），
+// 并且在我们 suggest() 之前下载不会落盘完成：小文件也来得及取消（onCreated 里取消常常已经下完了）。
+// 一定会 suggest()（4 秒兜底），绝不让浏览器下载卡死；不接管的原样放行。
+// 两个事件都接：onCreated 先到就先开始判定（有的环境——如被 DevTools 接管下载行为时——不触发 onDeterminingFilename），
+// onDeterminingFilename 到了就把浏览器算好的文件名递过去，并等判定结束再 suggest()。同一 id 只判定一次。
+const dfName = new Map();     // id -> 浏览器算好的文件名
+const dfWait = new Map();     // id -> resolve
+const handling = new Map();   // id -> Promise
+function startHandle(item) {
+  if (!handling.has(item.id)) {
+    handling.set(item.id, handleNewDownload(item).catch(() => {}));
+    while (handling.size > 100) handling.delete(handling.keys().next().value);
+  }
+  return handling.get(item.id);
+}
+function waitDfName(id, ms) {
+  if (dfName.has(id)) return Promise.resolve(dfName.get(id));
+  return new Promise((res) => { dfWait.set(id, res); setTimeout(() => { if (dfWait.get(id) === res) { dfWait.delete(id); res(""); } }, ms); });
+}
+try {
+  chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+    let done = false;
+    const fin = () => { if (done) return; done = true; try { suggest(); } catch (e) {} };
+    setTimeout(fin, 4000);
+    try {
+      const fn = (item.filename || "").split(/[\\/]/).pop();
+      dfName.set(item.id, fn);
+      while (dfName.size > 100) dfName.delete(dfName.keys().next().value);
+      const w = dfWait.get(item.id); if (w) { dfWait.delete(item.id); w(fn); }
+    } catch (e) {}
+    startHandle(item).finally(fin);
+    return true;
+  });
+} catch (e) { try { console.warn("[SniffDL] onDeterminingFilename 不可用", e); } catch (_) {} }
+chrome.downloads.onCreated.addListener((item) => { startHandle(item); });
+
+// 先暂停（本地/内网的小文件几十毫秒就下完了，等判定完再取消就晚了），判定不接管再恢复
+async function handleNewDownload(item) {
+  let paused = false;
+  const fresh = (() => { try { return (Date.now() - Date.parse(item.startTime)) < 20000; } catch (e) { return false; } })();
+  if (!item.byExtensionId && fresh && /^(https?|ftp):/i.test(item.finalUrl || item.url || "") && (!item.state || item.state === "in_progress")) {
+    try { await chrome.downloads.pause(item.id); paused = true; } catch (e) {}
+  }
+  let took = false;
+  try { took = !!(await decideDownload(item)); } catch (e) {}
+  if (!took && paused) { try { await chrome.downloads.resume(item.id); } catch (e) {} }
+  return took;
+}
+
+async function decideDownload(item) {
+  try {
     const c = await cfg();
     if (!c.enabled) return;
-    let tabId = item.tabId;
-    // 表单 POST 触发的下载：DownloadItem 不带 tabId → 用 webRequest 记下的发起标签
-    if ((tabId == null || tabId < 0) && postGet(item.url)) { tabId = postTab(item.url); if (tabId != null) await setGesture(tabId); }
-    if (tabId == null || tabId < 0) return;
-    if (await isBypassed(item)) { try { console.log('[SniffDL] onCreated skip(Alt/交回浏览器)', item.url); } catch (e) {} return; }
-    // 0.7.0：v3 内核 → 先按内核规则过一遍；离线 → 不抢，提示一声
+    if (takenIds.has(item.id) || cancelling.has(item.id)) return;
+    if (item.byExtensionId) return logDecision(item, { take: false, why: "扩展发起的下载（含我们交回浏览器的）" });
+    if (item.state && item.state !== "in_progress") return;
+    // 防洪水护栏：只接"刚刚新建"的下载——Chrome 开机自动续传的旧下载 startTime 很早，不碰
+    const fresh = (() => { try { return (Date.now() - Date.parse(item.startTime)) < 20000; } catch (e) { return false; } })();
+    if (!fresh) return logDecision(item, { take: false, why: "不是新下载（续传/历史）" });
+    const u0 = item.finalUrl || item.url || "";
+    if (!/^(https?|ftp):/i.test(u0)) return logDecision(item, { take: false, why: "blob:/data: 交给浏览器" });
+    const nav = navFind(item.finalUrl, item.url);
+    const tabId = await resolveTab(item, nav);
+    if (await isBypassed(Object.assign({}, item, { tabId }))) return logDecision(item, { take: false, why: "Alt 点击 / 已交回浏览器" });
     const rc = await getRules(false);
-    if (rc.mode === "offline") { notifyOffline(rc.error); return; }
-    let _pg = "";
+    if (rc.mode === "offline") { notifyOffline(rc.error); return logDecision(item, { take: false, why: "内核离线，放行浏览器" }); }
+    let pageUrl = "";
+    if (tabId >= 0) { try { const tb0 = await chrome.tabs.get(tabId); pageUrl = (tb0 && tb0.url) || ""; } catch (e) {} }
+    // 文件名：DownloadItem.filename → onDeterminingFilename（浏览器按 CD / download 属性算好的）→ CD 头 → URL
+    let fname = (item.filename || "").split(/[\\/]/).pop();
+    const cd = (nav && nav.cd) || "";
+    const ct = (nav && nav.ct) || item.mime || "";
+    if (!fname) fname = cdFilename(cd);
+    if (!fname) fname = hintName(item.url, item.finalUrl);
+    if (!fname) fname = await waitDfName(item.id, 400);
+    const size = item.totalBytes || (nav && nav.len) || 0;
+    const chain = (nav && nav.chain) || [item.url];
+    const req = (nav && nav.req) || {};
+    const hv = (n) => { for (const k of Object.keys(req)) if (k.toLowerCase() === n) return req[k]; return ""; };
+    const referer = hv("referer") || item.referrer || pageUrl || "";
+    const _ref0 = item.referrer || "";
+    const isNd = isNetdiskDl(u0) || isNetdiskDl(item.url || "") || isNetdiskPage(_ref0) || isNetdiskPage(pageUrl);
+
     if (rc.mode === "v3") {
-      try { const tb0 = await chrome.tabs.get(tabId); _pg = (tb0 && tb0.url) || ""; } catch (e) {}
-      const jr = judgeByRules(rc.rules, item.finalUrl || item.url || "", _pg || item.referrer || "", item.totalBytes || 0);
-      if (!jr.take) { try { console.log('[SniffDL] onCreated skip(内核规则)', jr.why, item.url); } catch (e) {} return; }
+      const jr = judgeByRules(rc.rules, u0, pageUrl || _ref0, size, { filename: fname, ct, cd, urls: chain });
+      if (!jr.take && !isNd) return logDecision(item, { take: false, why: jr.why });
+      // 碎屑/网页（无附件头的 html、极小文件、fwlink）仍不抢
+      if (!isAttachment(cd) && !isNd && isJunkAutolink(Object.assign({}, item, { mime: ct, totalBytes: size }), u0)) return logDecision(item, { take: false, why: "碎屑/网页" });
+      const userInit = tabId >= 0 && (Date.now() - (await getGesture(tabId))) <= 4000;   // 4 秒内刚点过 = 用户主动
+      if (tabId >= 0) await clearGesture(tabId);
+      takenIds.add(item.id); cancelling.add(item.id);       // 先取消浏览器自己的下载，再交内核
+      await dropBrowserDownload(item.id);
+      let info = { url: u0, filename: fname || baseName(item, u0), referer, size, source: "browser", mime: ct,
+                   cookie: hv("cookie") || null };
+      if (info.cookie == null) delete info.cookie;
+      info = await withCaptured(info);
+      if (isNd) scheduleCookieSync(200);
+      logDecision(item, { take: true, why: jr.why || "命中接管类型", filename: info.filename, referer, tabId, chain });
+      try { await v3Take(info, userInit, rc.rules); }
+      catch (e) {
+        if (e.offline) { notifyOffline(e.message); await markBypass(tabId, u0); try { await chrome.downloads.download({ url: u0 }); } catch (_) {} }
+        else notifyFail(info.filename || u0, e.message || String(e));
+      }
+      return true;
     }
+
+    // ---- 旧桌面端（legacy）：保持 0.6.0 手势闸门 ----
+    if (tabId == null || tabId < 0) return;
     const g = await getGesture(tabId);
     const hasGesture = (Date.now() - g) <= 4000;
-    // 0.6.0：网盘下载（下载 CDN 域，或在网盘网页上发起）→ 任何文件类型都接管。
-    // 防洪水护栏：只接"刚刚新建"的下载（startTime 20 秒内）——Chrome 开机自动续传的旧下载 startTime 很早，不碰。
-    const _u0 = item.finalUrl || item.url || "";
-    let _ref0 = item.referrer || "";
-    const _fresh = (() => { try { return (Date.now() - Date.parse(item.startTime)) < 20000; } catch (e) { return false; } })();
-    const isNd = _fresh && (isNetdiskDl(_u0) || isNetdiskDl(item.url || "") || isNetdiskPage(_ref0));
-    // 有近期手势，或下载项带明确文件名+真实扩展名（网盘直链那种），或网盘下载 → 才抢；都不是 = 后台噪声，放行（防洪水）
-    if (!hasGesture && !hasRealFileExt(item) && !isNd) { try { console.log('[SniffDL] onCreated skip(无手势且非明确文件)', item.url, item.filename); } catch (e) {} return; }
-    if (!shouldTakeGesture(item)) { try { console.log('[SniffDL] onCreated skip(过滤)', item.url); } catch (e) {} return; }
-    if (hasGesture) await clearGesture(tabId);             // 一次点击只接管一次
-    const url = item.finalUrl || item.url || "";
-    let referer = "";
-    try { const tb = await chrome.tabs.get(tabId); referer = (tb && tb.url) || ""; } catch (e) {}
-    let info = { url, filename: baseName(item, url), referer: referer || item.referrer || "", size: item.totalBytes || 0, source: "browser", mime: item.mime || "" };
-    info = await withCaptured(info);     // 网盘：带上浏览器真实发出的 UA/Cookie/Referer
+    if (!hasGesture && !hasRealFileExt(Object.assign({}, item, { filename: fname })) && !isNd) return logDecision(item, { take: false, why: "无手势且非明确文件" });
+    if (!shouldTakeGesture(item)) return logDecision(item, { take: false, why: "过滤" });
+    if (hasGesture) await clearGesture(tabId);
+    let info = { url: u0, filename: fname || baseName(item, u0), referer: pageUrl || item.referrer || "", size, source: "browser", mime: item.mime || "" };
+    info = await withCaptured(info);
     if (isNd) scheduleCookieSync(200);
-    cancelling.add(item.id);                               // 先取消浏览器自己的下载，再交给看板娘
-    try { await chrome.downloads.cancel(item.id); } catch (e) {}
-    try { chrome.downloads.removeFile(item.id); } catch (e) {}
-    try { chrome.downloads.erase(item.id); } catch (e) {}
-    if (rc.mode === "v3") {
-      try { await v3Take(info, hasGesture, rc.rules); }
-      catch (e) {
-        if (e.offline) { notifyOffline(e.message); await markBypass(tabId, url); try { await chrome.downloads.download({ url }); } catch (_) {} }
-        else notifyFail(info.filename || url, e.message || String(e));
-      }
-      return;
-    }
+    takenIds.add(item.id); cancelling.add(item.id);
+    await dropBrowserDownload(item.id);
+    logDecision(item, { take: true, why: "legacy" });
     if (!(await pushCard(tabId, info))) await silentFallback(info);
-  } catch (e) {}
-});
+    return true;
+  } catch (e) { try { console.warn("[SniffDL] 新下载判定异常", e && e.message); } catch (_) {} }
+  return takenIds.has(item.id);
+}
+
+// 浏览器自己的那份下载交给内核之后要收干净：先取消；本机回环上的小文件可能在取消送达前就已写完整
+// （A16 实测下载目录残留 13 份整文件）→ 已 complete 的要 removeFile 删掉落盘文件，最后再 erase 记录。
+// 取消本身同步等（别让浏览器继续拉流），善后放后台不拖慢交给内核。
+async function dropBrowserDownload(id) {
+  try { await chrome.downloads.cancel(id); } catch (e) {}
+  (async () => {
+    for (let i = 0; i < 12; i++) {
+      let it = null;
+      try { it = (await chrome.downloads.search({ id }))[0]; } catch (e) {}
+      if (!it) return;                                       // 记录已不在（浏览器自己清了）
+      if (it.state === "complete") { try { await chrome.downloads.removeFile(id); } catch (e) {} break; }
+      if (it.state === "interrupted") break;                 // 取消生效：.crdownload 已由浏览器删除
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    try { await chrome.downloads.erase({ id }); } catch (e) {}
+  })();
+}
 
 // 取消是我们主动做的 → 把那条 .crdownload 从下载记录里抹掉，保持干净
 chrome.downloads.onChanged.addListener((delta) => {
   if (cancelling.has(delta.id)) {
     cancelling.delete(delta.id);
-    try { chrome.downloads.removeFile(delta.id); } catch (e) {}
-    try { chrome.downloads.erase(delta.id); } catch (e) {}
+    try { chrome.downloads.removeFile(delta.id).catch(() => {}); } catch (e) {}
+    try { chrome.downloads.erase({ id: delta.id }).catch(() => {}); } catch (e) {}
   }
 });
 
@@ -651,6 +923,28 @@ async function handleMenu(info, tab) {
       return info.menuItemId === "sniffdl-all" ? await menuAllLinks(tab) : await menuAnalyze(tab);
     } catch (e) {
       if (e.offline) notifyOffline(e.message); else notifyFail(info.menuItemId === "sniffdl-all" ? "下载全部链接" : "分析本页", e.message || String(e));
+      return { ok: false, error: e.message || String(e) };
+    }
+  }
+  if (info && info.menuItemId === "sniffdl" && (info.linkUrl || info.srcUrl || info.selectionText)) {
+    // A16：v3 内核下，右键「用 SniffDL 下载」链接/图片直接交内核（带 Cookie/Referer，按「先确认」设置进待确认或直接开下）
+    try {
+      const rc = await getRules(true);
+      if (rc.mode === "offline") { notifyOffline(rc.error); return { ok: false, offline: true }; }
+      if (rc.mode === "v3") {
+        const referer = info.pageUrl || (tab && tab.url) || "";
+        const one = info.linkUrl || info.srcUrl || "";
+        if (one) return { ok: true, result: await v3Take({ url: one, filename: "", referer, size: 0, source: "chip" }, true, rc.rules) };
+        const urls = extractUrls(info.selectionText);
+        if (urls.length === 1) return { ok: true, result: await v3Take({ url: urls[0], filename: "", referer, size: 0, source: "chip" }, true, rc.rules) };
+        if (urls.length > 1) {
+          const r = await callRpc("sniffdl.grabber.push", [urls.map((u) => ({ url: u, referer })), "ext-selection"]);
+          notifyTaken("已推到 SniffDL「待确认」：" + ((r && r.added) || 0) + " 条", "selg-" + Date.now());
+          return r;
+        }
+      }
+    } catch (e) {
+      if (e.offline) notifyOffline(e.message); else notifyFail("右键下载", e.message || String(e));
       return { ok: false, error: e.message || String(e) };
     }
   }
@@ -837,6 +1131,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResp) => {
           else await setGesture(_sender.tab.id);
         }
         sendResp({ ok: true }); return;
+      }
+      if (msg && msg.type === "dl_hint") {      // A16：页面程序化 <a download> 的真实文件名
+        if (msg.url) { hintMem.set(msg.url, { filename: msg.filename || "", ts: Date.now() }); while (hintMem.size > 50) hintMem.delete(hintMem.keys().next().value); }
+        if (_sender && _sender.tab && _sender.tab.id != null) await setGesture(_sender.tab.id);
+        sendResp({ ok: true }); return;
+      }
+      if (msg && msg.type === "idm_exts") {     // A16：弹窗「恢复默认」
+        sendResp({ ok: true, list: IDM_DEFAULT_EXTS, text: IDM_DEFAULT_EXTS.join(" "), groups: IDM_EXT_GROUPS }); return;
       }
       if (msg && msg.type === "rules") {        // 0.7.0：内容脚本取接管规则
         const rc = await getRules(!!msg.force);
@@ -1035,12 +1337,18 @@ try {
 } catch (e) { try { console.warn("[SniffDL] 嗅探注册失败", e); } catch (_) {} }
 
 chrome.runtime.onMessage.addListener((msg, _s, sendResp) => {
-  if (!msg || (msg.type !== "sniff_list" && msg.type !== "sniff_push")) return;
+  if (!msg || (msg.type !== "sniff_list" && msg.type !== "sniff_push" && msg.type !== "sniff_clear")) return;
   (async () => {
     try {
       const tabId = msg.tabId;
       const l = (sniffMem.get(tabId) || []).slice();
-      if (msg.type === "sniff_list") { sendResp({ ok: true, items: l.map((x) => ({ url: x.url, kind: x.kind, size: x.size, type: x.type })) }); return; }
+      if (msg.type === "sniff_list") { sendResp({ ok: true, items: l.map((x) => ({ url: x.url, kind: x.kind, size: x.size, type: x.type, ts: x.ts })) }); return; }
+      if (msg.type === "sniff_clear") {
+        sniffMem.delete(tabId);
+        try { chrome.action.setBadgeText({ tabId, text: "" }); } catch (e) {}
+        sendResp({ ok: true, cleared: l.length });
+        return;
+      }
       const it = l.find((x) => x.url === msg.url);
       if (!it) { sendResp({ ok: false, error: "该条已过期" }); return; }
       let tab = null; try { tab = await chrome.tabs.get(tabId); } catch (e) {}
@@ -1055,13 +1363,14 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResp) => {
   return true;
 });
 self.__sdlSniffClassify = sniffClassify;
+self.__sdlLaunchSniffDL = launchSniffDL;
 
 
 // 内核不在线时经 Native Messaging（com.sniffdl.host）一键拉起 SniffDL
-async function launchSniffDL() {
+async function launchSniffDL(port) {
   return new Promise((resolve) => {
     try {
-      chrome.runtime.sendNativeMessage("com.sniffdl.host", { action: "launch", port: 6800 }, (r) => {
+      chrome.runtime.sendNativeMessage("com.sniffdl.host", { action: "launch", port: port || 6800 }, (r) => {
         if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
         else resolve(r || { ok: false });
       });
