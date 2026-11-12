@@ -68,12 +68,47 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rpc", default="http://127.0.0.1:6800/jsonrpc")
     ap.add_argument("--token", default="")
-    ap.add_argument("--outdir", required=True)
+    ap.add_argument("--outdir", default="")
+    ap.add_argument("--v3", action="store_true", help="自己起一个 v3 内核（tests/ui_smoke_core.py）当被测对象，免 --rpc/--outdir")
     ap.add_argument("--mport", type=int, default=18797)
     ap.add_argument("--mb", type=int, default=48)
     ap.add_argument("--public", default="")
     ap.add_argument("--public-sha256", default="", help="可选：公网文件官方 sha256（如 Alpine latest-releases.yaml 给的），下完逐字节核对")
     a = ap.parse_args()
+    v3core = None
+    if a.v3:
+        import shutil, socket, subprocess, tempfile
+        data = tempfile.mkdtemp(prefix="sdl_v3push_")
+        a.outdir = os.path.join(data, "out"); os.makedirs(a.outdir)
+        sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
+        a.rpc = "http://127.0.0.1:%d/jsonrpc" % port
+        env = dict(os.environ, SNIFFDL_DRYRUN_OS="1", NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost")
+        env.pop("DISPLAY", None)
+        v3core = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(HERE), "tests", "ui_smoke_core.py"),
+                                   "--data-dir", data, "--port", str(port), "--runtime", os.path.join(data, "runtime.json"),
+                                   "--ui-token", a.token or "v3tok"], env=env,
+                                  stdout=open(os.path.join(data, "core.out"), "w"), stderr=subprocess.STDOUT)
+        t0 = time.time()
+        while time.time() - t0 < 30:
+            try:
+                if rpc(a.rpc, "sniffdl.ping", [], "").get("result"):
+                    break
+            except Exception:
+                time.sleep(0.3)
+        req = urllib.request.Request(a.rpc, data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "sniffdl.settings.set",
+                                     "params": [{"outdir": a.outdir, "clip_watch": False}]}).encode(),
+                                     headers={"Content-Type": "application/json", "X-SniffDL-Token": a.token or "v3tok"})
+        OPENER.open(req, timeout=10).read()
+    if not a.outdir:
+        ap.error("需要 --outdir（或 --v3）")
+    try:
+        return _run(a)
+    finally:
+        if v3core:
+            v3core.terminate()
+
+
+def _run(a):
     res = []
 
     def ok(n, c, d=""):

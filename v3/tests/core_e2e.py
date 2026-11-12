@@ -23,6 +23,7 @@ import os
 import random
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -33,7 +34,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = "/tmp/sdlv3_e2e"
+DATA = os.environ.get("SDL_E2E_DATA") or "/tmp/sdlv3_e2e"   # 多个会话同时跑时可各用各的目录
 OUT = os.path.join(DATA, "out")
 INC = os.path.join(DATA, "inc")
 TOKEN = "e2etoken789"
@@ -285,7 +286,7 @@ def remove(gid, delete_files=False, cleanup=None):
 
 def base_settings():
     setv(speed_engine="auto", speed_limit_kbps=0, resume_policy="auto", cancel_cleanup="ask",
-         incomplete_dir="", incomplete_suffix=True, retry_count=0)
+         incomplete_dir="", incomplete_suffix=True, retry_count=0, max_conns="自动")
 
 
 # ------------------------------------------------------------------ 用例组
@@ -716,8 +717,162 @@ def g_diskfull():
     setv(disk_check=True)
 
 
+def g_conncap():
+    """A15：设置「最大连接数」>16 时，即使 speed_engine=aria2 也改走自研引擎（aria2 硬顶 16）；=16 仍走 aria2；
+    max_conns=128 时 LinkSwift 式无 token 推送照常（推送方 split=16 仍当上限）。"""
+    base_settings()
+    setv(speed_engine="aria2", max_conns="32")
+    name = "cc_32.bin"
+    Files.add(name, 16 * MB)
+    mk = log_mark()
+    gid = add(name)
+    v = finish_ok("aria2 模式 + 最大连接数 32", gid, name)
+    lg = "\n".join(logs_since(mk))
+    check("最大连接数 32 > 16：改走动态分片（engine=sdl）", v and v.get("engine") == "sdl", (v or {}).get("engine"))
+    check("日志「需要 32 路 > aria2 上限 16」且动态分片上限 32", "需要 32 路 > aria2 上限 16" in lg and "上限 32" in lg,
+          lg[-600:])
+    base_settings()
+    setv(speed_engine="aria2", max_conns="16")
+    name = "cc_16.bin"
+    Files.add(name, 8 * MB)
+    gid = add(name)
+    v = finish_ok("aria2 模式 + 最大连接数 16", gid, name)
+    check("最大连接数 16：仍走 aria2", v and v.get("engine") == "aria2", (v or {}).get("engine"))
+    base_settings()
+    setv(max_conns="128")
+    name = "cc_ls.bin"
+    Files.add(name, 6 * MB)
+    j = raw_rpc("aria2.addUri", [[url_of(name)], {"out": name, "dir": OUT, "split": "16",
+                                                  "max-connection-per-server": "16",
+                                                  "header": ["User-Agent: netdisk;LinkSwift"]}], token=None)
+    gid = j.get("result")
+    check("max_conns=128 时无 token addUri（LinkSwift）返回 gid", isinstance(gid, str) and len(gid) >= 8, j)
+    if gid:
+        finish_ok("max_conns=128 LinkSwift 推送", gid, name, 40)
+    base_settings()
+
+
+def g_bothlimit():
+    """全局限速合算（A4）：真直链 + 真 BT（本地 aria2c 做种 + 本地 HTTP tracker）同时跑，
+    10s 内两者已下字节之和 / 10s ≤ 设定限速 ×1.1，且两边都有进展；对照：不限速时同场景总速明显更高。"""
+    import core_unit as CU
+    sd = os.path.join(DATA, "seed")
+    shutil.rmtree(sd, ignore_errors=True)
+    os.makedirs(sd, exist_ok=True)
+    plen = 256 * 1024
+    data = random.Random("bothlimit").randbytes(64 * MB)
+    name = "bt_both.bin"
+    with open(os.path.join(sd, name), "wb") as f:
+        f.write(data)
+    pieces = b"".join(hashlib.sha1(data[i:i + plen]).digest() for i in range(0, len(data), plen))
+    seed_port = free_port()
+    trk_port = free_port()
+
+    class Trk(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            peers = socket.inet_aton("127.0.0.1") + struct.pack(">H", seed_port)
+            body = CU.benc({"interval": 30, "peers": peers})
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+    trk = QuietServer(("127.0.0.1", trk_port), Trk)
+    threading.Thread(target=trk.serve_forever, daemon=True).start()
+    tp = os.path.join(sd, "both.torrent")
+    with open(tp, "wb") as f:
+        f.write(CU.benc({"announce": "http://127.0.0.1:%d/announce" % trk_port,
+                         "info": {"name": name, "piece length": plen, "pieces": pieces, "length": len(data)}}))
+    seeder = subprocess.Popen(["aria2c", "--no-conf", "--enable-rpc=false", "--enable-dht=false", "--bt-enable-lpd=false",
+                               "--enable-peer-exchange=false", "--listen-port=%d" % seed_port, "-V", "--seed-ratio=0",
+                               "--seed-time=600", "--bt-seed-unverified=false", "--allow-overwrite=true",
+                               "-d", sd, tp], stdout=open(os.path.join(sd, "seed.log"), "w"), stderr=subprocess.STDOUT)
+    time.sleep(2.5)
+    limit_kb = 1024
+
+    def run_case(tag, lim):
+        base_settings()
+        setv(speed_limit_kbps=lim, bt_tracker_auto=False, bt_dht=False, bt_lpd=False, bt_pex=False, max_concurrent=3)
+        for x in os.listdir(OUT):
+            if x.startswith(name) or x.startswith("bl_"):
+                try:
+                    os.remove(os.path.join(OUT, x))
+                except OSError:
+                    pass
+        fname = "bl_%s.bin" % tag
+        Files.add(fname, 96 * MB)
+        r = rpc("sniffdl.task.add", {"url": tp, "dir": OUT})
+        bg = r.get("gid") if isinstance(r, dict) else r
+        vb = wait(lambda: (lambda x: x if x and x.get("kind") == "bt" and x["done"] > 0 else None)(view(bg)), 25)
+        b_start = (view(bg) or {}).get("done", 0)
+        t_add = time.time()
+        hg = add(fname)
+        if not lim:                              # 不限速：本机太快，10s 窗口里早下完 → 改量「到直链下完」的平均总速
+            vh = wait(lambda: (lambda x: x if x and x["status"] == "complete" else None)(view(hg)), 30)
+            el = time.time() - t_add
+            hb = (vh or {}).get("done", 0)
+            bb = (view(bg) or {}).get("done", 0) - b_start
+            for g in (bg, hg):
+                try:
+                    remove(g, True, True)
+                except Exception:
+                    pass
+            wait(lambda: view(bg) is None and view(hg) is None, 10)
+            print("  [%s] 直链 %d B 用时 %.2fs，同期 BT +%d B" % (tag, hb, el, bb), flush=True)
+            return bool(vb and vh), bb / el / 1024.0, hb / el / 1024.0, (hb + bb) / el / 1024.0
+        vh = wait_done_bytes(hg, 256 * 1024, 20)
+        ok0 = bool(vb and vh)
+        time.sleep(5)                           # 让 2s 重分摊与令牌桶先稳定
+        try:
+            peers = rpc("aria2.getPeers", bg)
+        except Exception as e:
+            peers = str(e)
+        check("aria2.getPeers 返回真 BT 对端（含本地做种者 127.0.0.1:%d）" % seed_port,
+              isinstance(peers, list) and any(p.get("ip") == "127.0.0.1" for p in peers), peers)
+        b0, h0, t0 = (view(bg) or {}).get("done", 0), (view(hg) or {}).get("done", 0), time.time()
+        time.sleep(10)
+        b1, h1, t1 = (view(bg) or {}).get("done", 0), (view(hg) or {}).get("done", 0), time.time()
+        el = t1 - t0
+        db, dh = b1 - b0, h1 - h0
+        rate = (db + dh) / el / 1024.0
+        print("  [%s] 10s 采样：直链 +%d B，BT +%d B" % (tag, dh, db), flush=True)
+        for g in (bg, hg):
+            try:
+                remove(g, True, True)
+            except Exception:
+                pass
+        wait(lambda: view(bg) is None and view(hg) is None, 10)
+        return ok0, db / el / 1024.0, dh / el / 1024.0, rate
+
+    try:
+        ok0, bkb, hkb, tot = run_case("lim", limit_kb)
+        TIMES["bothlimit_total_KBps"] = round(tot)
+        check("真 BT 与真直链都已开始下载", ok0)
+        check("限速 %dKB/s：直链 %.0f + BT %.0f = %.0f KB/s ≤ %.0f（×1.1）" % (limit_kb, hkb, bkb, tot, limit_kb * 1.1),
+              tot <= limit_kb * 1.1, (hkb, bkb, tot))
+        check("两边都有进展（直链 %.0f、BT %.0f KB/s 均 ≥ 限速的 10%%）" % (hkb, bkb),
+              hkb >= limit_kb * 0.1 and bkb >= limit_kb * 0.1, (hkb, bkb))
+        check("合算后总速未被压得过低（%.0f ≥ 限速 50%%）" % tot, tot >= limit_kb * 0.5, tot)
+        ok1, b2, h2, tot2 = run_case("free", 0)
+        TIMES["bothfree_total_KBps"] = round(tot2)
+        check("对照：不限速同场景总速 %.0f KB/s ≥ 限速 %d 的 2 倍（证明上面是限速在起作用）" % (tot2, limit_kb),
+              ok1 and tot2 >= limit_kb * 2, (ok1, tot2))
+    finally:
+        try:
+            seeder.terminate()
+            seeder.wait(5)
+        except Exception:
+            seeder.kill()
+        trk.shutdown()
+        base_settings()
+
+
+
 GROUPS = [("modes", g_modes), ("fallback", g_fallback), ("limit", g_limit), ("pause", g_pause),
-          ("cancel", g_cancel), ("incdir", g_incdir), ("rpcopt", g_rpcopt), ("linkswift", g_linkswift), ("diskfull", g_diskfull), ("btclean", g_btclean)]
+          ("cancel", g_cancel), ("incdir", g_incdir), ("rpcopt", g_rpcopt), ("linkswift", g_linkswift), ("diskfull", g_diskfull), ("btclean", g_btclean),
+          ("conncap", g_conncap), ("bothlimit", g_bothlimit)]
 
 
 def main(argv):

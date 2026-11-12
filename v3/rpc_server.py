@@ -99,6 +99,60 @@ def ws_origin_ok(origin, token_set):
     return bool(_CORS_ORIGIN_RE.match(o))
 
 
+# ---------- WebSocket（RFC 6455 最小实现：文本/ping/pong/close，支持分片；aria2 的 ws://127.0.0.1:6800/jsonrpc）----------
+WS_MAX_FRAME = 16 * 1024 * 1024
+
+
+def ws_accept_key(key):
+    return base64.b64encode(hashlib.sha1((key.strip() + _WS_GUID).encode("ascii")).digest()).decode("ascii")
+
+
+def ws_encode(payload, opcode=0x1):
+    """服务端帧（不掩码）。payload: str/bytes。"""
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+    n = len(payload)
+    head = bytes([0x80 | opcode])
+    if n < 126:
+        head += bytes([n])
+    elif n < 65536:
+        head += bytes([126]) + struct.pack(">H", n)
+    else:
+        head += bytes([127]) + struct.pack(">Q", n)
+    return head + payload
+
+
+def _ws_read_exact(rf, n):
+    buf = b""
+    while len(buf) < n:
+        c = rf.read(n - len(buf))
+        if not c:
+            raise EOFError("ws closed")
+        buf += c
+    return buf
+
+
+def ws_read_frame(rf):
+    """读一帧 -> (fin, opcode, payload)；客户端帧必须带掩码。"""
+    h = _ws_read_exact(rf, 2)
+    fin, op = bool(h[0] & 0x80), h[0] & 0x0F
+    masked, n = bool(h[1] & 0x80), h[1] & 0x7F
+    if n == 126:
+        n = struct.unpack(">H", _ws_read_exact(rf, 2))[0]
+    elif n == 127:
+        n = struct.unpack(">Q", _ws_read_exact(rf, 8))[0]
+    if n > WS_MAX_FRAME:
+        raise ValueError("ws frame too large")
+    if not masked:
+        raise ValueError("client frame not masked")
+    mask = _ws_read_exact(rf, 4)
+    data = bytearray(_ws_read_exact(rf, n)) if n else bytearray()
+    for i in range(n):
+        data[i] ^= mask[i & 3]
+    return fin, op, bytes(data)
+
+
+
 def _norm_struct(t):
     """把宿主返回的任务字典补全成 aria2 常见字段，缺省填安全值。"""
     gid = str(t.get("gid", ""))
@@ -222,6 +276,9 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             _path = "/"
         b = self.server.rpc.backend
+        if _path in ("/jsonrpc", "/") and (self.headers.get("Upgrade") or "").lower() == "websocket":
+            self._ws_serve()
+            return
         if _path == "/events" and hasattr(b, "serve_events"):
             if not self._ctx()["ui"]:
                 self._reply(401, {"error": "需要界面令牌"})
@@ -313,6 +370,63 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    # ---- WebSocket：aria2 同款 ws://host:port/jsonrpc（请求/响应 + onDownloadXxx 通知）----
+    def _ws_serve(self):
+        srv = self.server
+        rpc = srv.rpc
+        key = (self.headers.get("Sec-WebSocket-Key") or "").strip()
+        if (self.headers.get("Sec-WebSocket-Version") or "").strip() != "13" or not key:
+            self._reply(400, {"error": "bad websocket handshake"})
+            return
+        if not ws_origin_ok(self.headers.get("Origin"), bool(getattr(srv, "token", "")) or self._ctx()["ui"]):
+            self._reply(403, {"error": "origin not allowed"})
+            return
+        ctx = self._ctx()
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", ws_accept_key(key))
+        self.end_headers()
+        self.wfile.flush()
+        self.close_connection = True
+        cl = rpc._ws_add(self.connection, self.wfile)
+        buf, buf_op = b"", None
+        try:
+            while True:
+                fin, op, data = ws_read_frame(self.rfile)
+                if op == 0x8:                                   # close
+                    cl.send(ws_encode(data[:2], 0x8))
+                    break
+                if op == 0x9:                                   # ping -> pong
+                    cl.send(ws_encode(data, 0xA))
+                    continue
+                if op == 0xA:
+                    continue
+                if op in (0x1, 0x2):
+                    buf, buf_op = data, op
+                elif op == 0x0 and buf_op is not None:
+                    buf += data
+                else:
+                    continue
+                if not fin:
+                    continue
+                msg, buf, buf_op = buf, b"", None
+                try:
+                    req = json.loads(msg.decode("utf-8", "ignore") or "{}")
+                except Exception:
+                    cl.send(ws_encode(json.dumps({"jsonrpc": "2.0", "error":
+                            {"code": -32700, "message": "parse error"}, "id": None})))
+                    continue
+                if isinstance(req, list):
+                    resp = [rpc.handle(r if isinstance(r, dict) else {}, ctx) for r in req]
+                else:
+                    resp = rpc.handle(req if isinstance(req, dict) else {}, ctx)
+                cl.send(ws_encode(json.dumps(resp, ensure_ascii=False)))
+        except (EOFError, ValueError, OSError):
+            pass
+        finally:
+            rpc._ws_del(cl)
+
     def do_POST(self):
         if not self._host_ok():
             self._reply(403, {"error": "bad host"})
@@ -350,6 +464,30 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
 
+class _WsClient:
+    """一个 WebSocket 连接；发送加锁（请求线程与通知线程都会写）。"""
+
+    def __init__(self, conn, wfile):
+        self.conn, self.wfile = conn, wfile
+        self._lk = threading.Lock()
+        self.dead = False
+
+    def send(self, frame):
+        if self.dead:
+            return False
+        try:
+            with self._lk:
+                self.wfile.write(frame)
+                self.wfile.flush()
+            return True
+        except Exception:
+            self.dead = True
+            return False
+
+    def close(self):
+        self.dead = True
+
+
 class RpcServer:
     """在后台线程里跑的 aria2 兼容 JSON-RPC 服务。"""
 
@@ -363,6 +501,40 @@ class RpcServer:
         self._thread = None
         self.bound_port = 0
         self._ctx_local = threading.local()
+        self._ws_clients = set()
+        self._ws_lock = threading.Lock()
+
+    # ---- WebSocket 客户端登记与通知广播 ----
+    def _ws_add(self, conn, wfile):
+        cl = _WsClient(conn, wfile)
+        with self._ws_lock:
+            self._ws_clients.add(cl)
+        return cl
+
+    def _ws_del(self, cl):
+        with self._ws_lock:
+            self._ws_clients.discard(cl)
+        cl.close()
+
+    @property
+    def ws_count(self):
+        with self._ws_lock:
+            return len(self._ws_clients)
+
+    def notify(self, method, gid):
+        """向所有 WebSocket 客户端推 aria2 通知（method 取 WS_NOTIFICATIONS）；返回送达客户端数。"""
+        if method not in WS_NOTIFICATIONS:
+            return 0
+        frame = ws_encode(json.dumps({"jsonrpc": "2.0", "method": method, "params": [{"gid": str(gid)}]}))
+        with self._ws_lock:
+            cs = list(self._ws_clients)
+        n = 0
+        for c in cs:
+            if c.send(frame):
+                n += 1
+            else:
+                self._ws_del(c)
+        return n
 
     # ---- 生命周期 ----
     def start(self):

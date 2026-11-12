@@ -147,8 +147,9 @@ def run_a():
                 ui.focus("#addInput"); ui.keyboard.press("Control+Enter")
             ok_task = wait(lambda: ui.query_selector(".task"), 15)
             R.ok("A9 拟人粘贴链接 → 出现任务行", ok_task)
-            ar = wait(lambda: procs("aria2c.exe"), 20)
-            R.ok("A10 下载中 aria2c.exe 已拉起", ar, ar)
+            # 直链默认走自研动态分片引擎（speed_engine=auto），不会起 aria2c.exe；有进度即证明引擎在跑
+            ar = wait(lambda: procs("aria2c.exe") or ui.evaluate("[...window.__sdl.S.tasks.values()].some(t => t.done > 0 || t.status === 'complete')"), 20)
+            R.ok("A10 下载中引擎在跑（自研引擎有进度，或 aria2c.exe 已拉起）", ar, ar)
             tl.seg("下载中（等待）", 6)
             time.sleep(2)
             shot_page(ui, "main_downloading.png")
@@ -276,8 +277,20 @@ def run_a():
                 rc = el.wait(25)
             except subprocess.TimeoutExpired:
                 pass
-            if rc is None:       # 托盘退出没生效 → 兜底走 sniffdlHost.quit()
-                R.ok("A28 托盘「退出 SniffDL」让 Electron 退出", False, "25s 内未退出，改用 sniffdlHost.quit()")
+            if rc is None:       # 真菜单键盘选择没生效 → 先直接 click 菜单项（同一个 click 处理函数），再兜底 sniffdlHost.quit()
+                R.ok("A28 托盘「退出 SniffDL」让 Electron 退出（键盘选菜单）", False, "25s 内未退出，改用菜单项 click()")
+                try:
+                    ni2 = NodeInspector(insp)
+                    lab = ni2.eval("(()=>{const m=globalThis.__sdlTrayMenu; const it=m&&m.items.find(i=>String(i.label).includes('退出')); if(!it) return null; it.click(); return it.label})()")
+                    ni2.close()
+                    try:
+                        rc = el.wait(20)
+                    except subprocess.TimeoutExpired:
+                        rc = None
+                    R.ok("A28b 托盘菜单项「退出 SniffDL」click() 让 Electron 退出", rc is not None, "label=%s rc=%s" % (lab, rc))
+                except Exception as e:
+                    R.ok("A28b 托盘菜单项 click()", False, repr(e))
+            if rc is None:
                 try:
                     ui.evaluate("window.sniffdlHost.quit()")
                 except Exception:
@@ -320,8 +333,14 @@ def run_b():
         core_pid = info["pid"]
         r = rpc(info["port"], "sniffdl.task.add", {"url": "http://127.0.0.1:%d/slow.bin" % fport, "start_now": True}, token=info["ui_token"])
         R.ok("B2 RPC 添加慢速下载", (r.get("result") or {}).get("ok"), r)
-        ar = wait(lambda: procs("aria2c.exe"), 25)
-        R.ok("B3 aria2c.exe 在跑", ar, ar)
+        def _prog():
+            try:
+                ts = rpc(info["port"], "sniffdl.tasks", token=info["ui_token"]).get("result") or []
+                return any((t.get("done") or 0) > 0 for t in ts) or procs("aria2c.exe")
+            except Exception:
+                return None
+        ar = wait(_prog, 25)
+        R.ok("B3 下载引擎在跑（任务有进度，或 aria2c.exe 已拉起）", ar, ar)
         time.sleep(3)
         kill = subprocess.run(["taskkill", "/F", "/PID", str(el.pid)], capture_output=True, text=True, errors="replace")
         t0 = time.time()

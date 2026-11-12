@@ -1,6 +1,8 @@
 """每主机的连接策略。
 
-默认：起始 8 连接、上限 32；已知的大型 CDN（“快主机”）上限 64。
+默认：起始 8 连接、自动上限 64；已知的大型 CDN（“快主机”）上限 128（A15，2026-11-12：原 32/64）。
+任何来源（resolver / override / 调用方 profile）给的上限都会被 clamp 到 HARD_MAX=128。
+自动模式下实际用多少路由 engine._adapt 按实测吞吐决定（每加一批提升 <5% 就停），不是一上来就开满。
 SniffDL 可以通过 set_resolver() 接入 netdisk_rules.match_profile，把网盘的防封上限
 （例如某网盘最多 4 连接、单连接站点）变成这里的 HostProfile。
 """
@@ -10,8 +12,9 @@ from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 DEFAULT_START = 8
-DEFAULT_MAX = 32
-FAST_MAX = 64
+DEFAULT_MAX = 64          # 自动模式默认上限（A15：32→64）
+FAST_MAX = 128            # 快主机自动上限（A15：64→128）
+HARD_MAX = 128            # 绝对上限：设置「最大连接数」最高档
 MIN_SPLIT = 512 * 1024
 
 
@@ -23,7 +26,7 @@ class HostProfile:
     min_split: int = MIN_SPLIT
 
     def clamp(self):
-        mx = max(1, int(self.max_conn))
+        mx = max(1, min(HARD_MAX, int(self.max_conn)))
         st = max(1, min(int(self.start_conn), mx))
         return replace(self, max_conn=mx, start_conn=st, min_split=max(64 * 1024, int(self.min_split)))
 

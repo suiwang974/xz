@@ -281,10 +281,20 @@ class Engine(V.App):
                 self._pet.quit()
         except Exception:
             pass
-        self._rpc_stop()
-        RT.remove(self.runtime_path)
-        self.keepawake.set(False)
-        self.root.stop()
+        # 每一步各自兜底：Windows 实测 B8——宿主被 taskkill /F、内核带着在下的任务自退时，
+        # _rpc_stop 等一步抛错会让 runtime.json 留在磁盘上（后续启动被误认成「内核还活着」）。
+        # runtime.json 必须无论如何删掉，放在最先一个独立步骤的 finally 里。
+        try:
+            self._rpc_stop()
+        except Exception:
+            pass
+        finally:
+            RT.remove(self.runtime_path)
+        for _step in (lambda: self.keepawake.set(False), lambda: self.root.stop()):
+            try:
+                _step()
+            except Exception:
+                pass
 
     def _load_v3_keys(self):
         """V.load_config 只保留旧版 _CFG_DEFAULT 里的键 → v3 设置表新增的键和 queues 重启后会丢。
@@ -918,6 +928,12 @@ class Engine(V.App):
             if gone:
                 self.log("[续传] 策略=总是从头：丢弃旧进度 %s（%s）" % (" ".join(gone), name[:60]))
         m = SPD.mode(self)
+        if m == "aria2" and SPD.available():
+            need = SPD.needs_sdl(self, url, conn, t)
+            if need:
+                # A15：要 >16 路时 aria2 做不到（1.37 硬顶 16），先走自研引擎，失败仍回退 aria2
+                self.log("[直链] 需要 %d 路 > aria2 上限 16，改走动态分片引擎（失败回退 aria2）" % need)
+                m = "auto"
         if m != "aria2":
             try:
                 if pol == "always" and os.path.exists(wpath + SPD.SIDE_SUFFIX) and os.path.exists(wpath + SPD.TMP_SUFFIX):
@@ -1085,7 +1101,7 @@ class Engine(V.App):
             return
         changed_total = (self._eff_limit is None or self._eff_limit[0] != kb)
         self._eff_limit = key
-        self.gbucket.set_rate(kb * 1024)
+        self.gbucket.set_rate(hk * 1024 if kb else 0)      # 自研分片/yt-dlp 共用此桶：BT 同时在跑时只拿直链那一份，否则两边各吃满额
         for name, fn, live, share in (("h2", self._h2_rpc_raw, (getattr(self, "_h2", None) or {}).get("port"), hk),
                                       ("bt", self._bt_rpc, (self._bt or {}).get("port"), bk)):
             if not live:
@@ -1889,6 +1905,56 @@ class Engine(V.App):
         self._views = cur
         if ups or gone:
             self.bus.emit("tasks", {"upsert": ups, "removed": gone})
+        try:
+            self._ws_notify(ups, gone)
+        except Exception:
+            pass
+
+    def _ws_notify(self, ups, gone):
+        """任务状态迁移 → aria2 WebSocket 通知（AriaNg/Motrix 类客户端靠它实时刷新）。
+        首次（启动恢复的任务）只记状态不通知；active 之外新任务出现也只在迁移时发。"""
+        srv = self._rpc_srv
+        prev = self.__dict__.setdefault("_ws_prev", {})
+        first = not self.__dict__.get("_ws_seeded")
+        self._ws_seeded = True
+        for v in ups:
+            g, st, ph = v["gid"], v.get("status"), v.get("phase")
+            old = prev.get(g)
+            prev[g] = (st, ph)
+            if first or srv is None or (old and old == (st, ph)):
+                continue
+            ost = old[0] if old else None
+            oph = old[1] if old else None
+            if st in ("complete", "error") and ost in (None, "waiting"):
+                srv.notify("aria2.onDownloadStart", g)       # 小文件一个 tick 内就下完：补发 Start，与 aria2 顺序一致
+            if st == "active" and ost != "active":
+                srv.notify("aria2.onDownloadStart", g)
+            elif st == "paused" and ost != "paused":
+                srv.notify("aria2.onDownloadPause", g)
+            elif st == "complete" and ost != "complete":
+                srv.notify("aria2.onDownloadComplete", g)
+            elif st == "error" and ost != "error":
+                srv.notify("aria2.onDownloadError", g)
+            if v.get("kind") == "bt" and ph in ("seeding", "complete") and oph not in ("seeding", "complete"):
+                srv.notify("aria2.onBtDownloadComplete", g)
+        for g in gone:
+            if prev.pop(g, None) is not None and srv is not None and not first:
+                srv.notify("aria2.onDownloadStop", g)
+
+    def rpc_peers(self, gid):
+        """aria2.getPeers：BT 任务经 BT 守护取真实 peer，转成 aria2 格式；其它任务空。"""
+        t = self._rpc_tasks.get(str(gid))
+        bg = (t or {}).get("btGid")
+        if not t or not bg or not (self._bt or {}).get("port"):
+            return []
+        out = []
+        for p in self._bt_rpc("aria2.getPeers", [bg]) or []:
+            out.append({"peerId": p.get("peerId") or "", "ip": p.get("ip") or "", "port": str(p.get("port") or ""),
+                        "bitfield": p.get("bitfield") or "", "amChoking": p.get("amChoking") or "false",
+                        "peerChoking": p.get("peerChoking") or "false",
+                        "downloadSpeed": str(p.get("downloadSpeed") or 0),
+                        "uploadSpeed": str(p.get("uploadSpeed") or 0), "seeder": p.get("seeder") or "false"})
+        return out
 
     def _tick_loop(self):
         n = 0

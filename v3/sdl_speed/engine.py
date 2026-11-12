@@ -27,7 +27,7 @@ TICK = 0.25
 SAVE_EVERY = 1.0
 PROGRESS_EVERY = 0.5
 GROW_EVAL = 1.5          # 每次改连接数后等多久再评估吞吐
-GROW_GAIN = 1.10         # 吞吐提升 ≥10% 才继续加
+GROW_GAIN = 1.05         # 吞吐提升 ≥5% 才继续加（A15：<5% 就停）
 SLOW_RATIO = 0.3         # 低于中位速度 0.3× 算慢
 SLOW_HOLD = 1.5          # 持续这么久才踢
 SLOW_MIN_AGE = 2.0       # 新连接先给 2 秒热身
@@ -163,7 +163,7 @@ class DownloadTask:
         self.single = False
         self.speed = 0.0
         self.stats = {"steals": 0, "demotions": 0, "throttles": 0, "resets": 0, "max_conn": 0,
-                      "requests": 0, "resumed_from": 0}
+                      "requests": 0, "resumed_from": 0, "cap": self.profile.max_conn, "ceiling": 0}
         self._reset_runtime()
 
     # ------------------------------------------------------------------ 公开 API
@@ -247,6 +247,7 @@ class DownloadTask:
         self._cap = self.profile.max_conn
         self._last_change = time.monotonic()
         self._base_tp = None
+        self._prev_target = None
         self._grow_done = False
         self._split_rejected = False    # 额外连接被 401/403 拒（一次性链接）→ 不再切开放流
         self._frozen_until = 0.0
@@ -910,7 +911,7 @@ class DownloadTask:
                 if alone and w.attempt >= 2:
                     raise http_error(st)
             self._last_err = http_error(st)
-            self._on_throttle()
+            self._on_throttle(st)
             raise _Retry(delay=backoff_delay(w.attempt, ra), new_conn=False, rejected=st in (401, 403))
         if 500 <= st < 600:
             self._last_err = http_error(st)
@@ -1004,12 +1005,18 @@ class DownloadTask:
                 gain = tp / self._base_tp if self._base_tp else (1.0 if self._cooled else 2.0)
                 step = self.target if gain >= 1.4 else max(2, self.target // 2)
                 self._base_tp = tp
+                self._prev_target = self.target
                 self.target = min(self._cap, self.target + step, max(1, slots))
                 self._last_change = now
             else:
-                self._grow_done = True        # 再加连接也没用了，停在这里
+                # 这批连接带来的提升 <5%：停止加，并退回上一档（多开的连接白占服务器、还招限流）
+                self._grow_done = True
+                pt = getattr(self, "_prev_target", None)
+                if pt and pt < self.target:
+                    self.target = pt
+                self.stats["auto_stop"] = self.target
 
-    def _on_throttle(self):
+    def _on_throttle(self, status=None):
         now = time.monotonic()
         with self._lk:
             self.stats["throttles"] += 1
@@ -1017,7 +1024,16 @@ class DownloadTask:
                 return
             self._last_throttle = now
             n = max(len(self._workers), self.target)
-            self.target = max(1, int(round(n * THROTTLE_FACTOR)))
+            tgt = max(1, int(round(n * THROTTLE_FACTOR)))
+            # 正在出数据的连接数 ≈ 服务器肯给的并发（多出来的那批正吃 429/503）：学成本任务的上限，
+            # 之后再加连接也不越过它，避免「降→加→又被拒」来回撞墙（A15）
+            live = sum(1 for w in self._workers if w.resp is not None and w.seg is not None)
+            # 只认 429/503（明确的「太多了」）；401/403 多半是一次性链接拒分片，交给 _give_back 并回开放流
+            if status in (429, 503) and live >= 1 and live < n:
+                tgt = min(tgt, live)
+                self._cap = max(1, min(self._cap, live))
+                self.stats["ceiling"] = self._cap
+            self.target = tgt
             self._frozen_until = now + FREEZE_AFTER_THROTTLE
             self._cooled = True
             self._base_tp = None

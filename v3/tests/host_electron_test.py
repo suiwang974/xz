@@ -186,8 +186,9 @@ def main():
             ui.click("#addInput"); ui.keyboard.insert_text("http://127.0.0.1:%d/files/host_sample.bin" % fport)
             ui.keyboard.press("Control+Enter")
             ui.wait_for_selector(".task", timeout=15000)
-            ar = wait(lambda: pids("aria2c"), 20)
-            ok("下载中 aria2c 已拉起", ar, ar)
+            # 直链默认走自研动态分片引擎（speed_engine=auto）不起 aria2c；有进度即引擎在跑
+            ar = wait(lambda: pids("aria2c") or ui.evaluate("[...window.__sdl.S.tasks.values()].some(t => t.done > 0 || t.status === 'complete')"), 20)
+            ok("下载中引擎在跑（自研引擎有进度或 aria2c 已拉起）", ar, ar)
             time.sleep(2.5)
             ui.screenshot(path=os.path.join(SHOTS, "main_downloading.png"))
             ok("截图 main_downloading.png", os.path.getsize(os.path.join(SHOTS, "main_downloading.png")) > 20000)

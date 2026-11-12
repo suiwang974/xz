@@ -125,7 +125,7 @@ jobs:
                     "--aria2", $env:ARIA2C_EXE, "--out", $env:BENCH_OUT,
                     "--work", "$env:RUNNER_TEMP\bench_work", "--data", "$env:RUNNER_TEMP\bench_data")
           if ($env:IDM_EXE) { $ba += @("--idm", $env:IDM_EXE) }
-          python @args
+          python @ba
 
       - name: Job Summary
         if: always()
@@ -133,6 +133,7 @@ jobs:
           $md = Join-Path $env:BENCH_OUT "测速报告.md"
           if (Test-Path $md) {
             Get-Content $md -Encoding utf8 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+            Get-Content $md -Encoding utf8
           } else {
             "## 测速未生成报告`n`nIDM 安装：$env:IDM_INSTALL_NOTE" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           }

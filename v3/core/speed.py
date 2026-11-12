@@ -9,6 +9,9 @@
            status_cb=None, task=None) -> path
       与 engine._http_aria2c 同参，可以直接放在 aria2c 前面先试。
 
+连接上限（A15，2026-11-12）：自动 8→64（快主机 128），设置「最大连接数」max_conns=8/16/32/64/128 当上限；
+需要 >16 路（needs_sdl）时即使 speed_engine=aria2 也先走本引擎，失败才回 aria2（aria2 那边仍夹到 16）。
+
 结果约定（调用方只需三种处理）：
   · 返回路径                         成功（文件已是最终名）。
   · raise video_downloader._AbortSignal  用户暂停/取消（.sdl + .sdlpart 保留，下次同 URL 自动续传）。
@@ -176,9 +179,24 @@ def _proxy_for(url):
     return {"http": px, "https": px}, False
 
 
+ARIA2_HARD = 16          # aria2 1.37 max-connection-per-server 硬顶
+SDL_HARD = 128           # 自研引擎绝对上限（= sdl_speed.profiles.HARD_MAX）
+AUTO_MAX = 64            # 「最大连接数=自动」时普通站点的自动上限（快主机 128，见 sdl_speed.profiles）
+
+
+def max_conns_setting(eng):
+    """设置「最大连接数」（max_conns）：返回 int 上限，自动 / 没设 / 非法 → None。"""
+    cfg = getattr(eng, "cfg", None) or {}
+    v = str(cfg.get("max_conns") or "自动").strip()
+    if v.isdigit() and int(v) > 0:
+        return max(1, min(SDL_HARD, int(v)))
+    return None
+
+
 def _profile_for(eng, url, conn, min_split, task):
-    """返回 (sdl_speed profile 或 None=自动 8→32/64, 规则名)。
-    网盘规则 / 推送方 split / 任务手动连接数：照它当上限；普通站点自动加连接。"""
+    """返回 (sdl_speed profile 或 None=自动 8→64（快主机 128）, 规则名)。
+    网盘规则 / 推送方 split / 任务手动连接数 / 设置「最大连接数」：照它当上限（都取最小）；普通站点自动加连接。
+    网盘规则的防封默认值不变（≤16）；用户在 netdisk_conn 里把某网盘覆盖到 >16 时，自研引擎照覆盖值走（最多 128）。"""
     prof = None
     if ND is not None:
         try:
@@ -187,14 +205,19 @@ def _profile_for(eng, url, conn, min_split, task):
             prof = None
     cfg = getattr(eng, "cfg", None) or {}
     cap = None
+    gmax = max_conns_setting(eng)
     hint = (task or {}).get("a2opts") or {}
     tc = str((task or {}).get("conns") or "")
     if prof is not None:
         try:
+            cap = ND.profile_conn(prof, cfg, gmax, hard_max=SDL_HARD)
+        except TypeError:          # 旧版 netdisk_rules 没有 hard_max
             cap = ND.profile_conn(prof, cfg, int(conn) if conn else 16)
         except Exception:
             cap = int(prof.get("conn") or 8)
         min_split = prof.get("min_split") or min_split
+    elif gmax is not None:
+        cap = gmax
     for k in ("max-connection-per-server", "split"):
         try:
             if hint.get(k):
@@ -207,13 +230,45 @@ def _profile_for(eng, url, conn, min_split, task):
         cap = min(cap or 9999, max(1, int(tc)))
     if cap is None:
         return None, "通用"
+    cap = max(1, min(SDL_HARD, int(cap)))
     try:
         ms = SPEED.profiles.parse_size(min_split or "1M")
     except Exception:
         ms = 1024 * 1024
-    name = (prof or {}).get("name") or "手动"
+    name = (prof or {}).get("name") or ("最大连接数" if gmax is not None and not tc.isdigit() and
+                                        not any(hint.get(k) for k in ("max-connection-per-server", "split"))
+                                        else "手动")
     return {"name": name, "max_conn": max(1, int(cap)), "start_conn": min(8, max(1, int(cap))),
             "min_split": ms}, name
+
+
+def planned_cap(eng, url, conn=None, task=None):
+    """这单交给自研引擎时的连接上限（自动模式 = 自动上限 64/128）。"""
+    try:
+        prof, _ = _profile_for(eng, url, conn, "1M", task)
+    except Exception:
+        return None
+    if prof:
+        return int(prof["max_conn"])
+    try:
+        return int(SPEED.profiles.resolve(url).max_conn) if SPEED is not None else None
+    except Exception:
+        return AUTO_MAX
+
+
+def needs_sdl(eng, url, conn=None, task=None):
+    """用户/推送方/网盘覆盖【明确要求】>16 路（aria2 做不到）→ 返回该路数，否则 0。
+    「最大连接数=自动」不算明确要求：speed_engine=aria2 时仍尊重用户选 aria2。"""
+    if SPEED is None:
+        return 0
+    try:
+        prof, pname = _profile_for(eng, url, conn, "1M", task)
+    except Exception:
+        return 0
+    if not prof:
+        return 0
+    n = int(prof["max_conn"])
+    return n if n > ARIA2_HARD else 0
 
 
 def _discard(out_path):
@@ -235,6 +290,19 @@ def _fatal(url, headers, status, raw):
 
 
 # ------------------------------------------------------------------ run_http：与 _http_aria2c 同参
+def _apply_remote_time(eng, path, last_modified):
+    """设置「保留服务器文件时间」(remote_time) 开时，用响应的 Last-Modified 设文件 mtime（aria2 路径由 remote-time 选项管）。"""
+    try:
+        if not last_modified or str((getattr(eng, "cfg", None) or {}).get("remote_time", False)).lower() in ("false", "0", "", "none"):
+            return
+        from email.utils import parsedate_to_datetime
+        ts = parsedate_to_datetime(last_modified).timestamp()
+        if os.path.isfile(path):
+            os.utime(path, (ts, ts))
+    except Exception:
+        pass
+
+
 def run_http(eng, url, outdir, name, headers, prog=None, cancel=None, conn=None, min_split="1M",
              status_cb=None, task=None, stall_timeout=60.0):
     if SPEED is None:
@@ -286,7 +354,8 @@ def run_http(eng, url, outdir, name, headers, prog=None, cancel=None, conn=None,
 
     resumed = os.path.exists(path + SIDE_SUFFIX) and os.path.exists(path + TMP_SUFFIX)
     _log(eng, "[直链] 动态分片引擎启动：%s 连接策略=%s%s%s" % (
-        name[:60], pname, "（上限 %d）" % profile["max_conn"] if profile else "（自动 8→32）",
+        name[:60], pname, "（上限 %d）" % profile["max_conn"] if profile else "（自动 8→%d）" % (
+            SPEED.profiles.resolve(url).max_conn if SPEED is not None else AUTO_MAX),
         "，从 .sdl 续传" if resumed else ""))
     prev_in_a2 = getattr(tl, "in_aria2", False) if tl is not None else False
     if tl is not None:
@@ -314,6 +383,7 @@ def run_http(eng, url, outdir, name, headers, prog=None, cancel=None, conn=None,
             res = dt.result()
             if task is not None and getattr(dt, "cdisp", ""):
                 task["_cdisp"] = dt.cdisp
+            _apply_remote_time(eng, path, getattr(dt, "last_modified", None))
         except SPEED.CancelledError:
             raise abort_exc()()
         except SPEED.SpeedError as e:

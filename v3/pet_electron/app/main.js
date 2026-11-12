@@ -48,7 +48,12 @@ try {
 } catch (e) {}
 try { if (process.platform === 'win32') app.setAppUserModelId('SniffDL'); } catch (e) {}   // Windows 通知需要
 const GOT_LOCK = app.requestSingleInstanceLock();
-if (!GOT_LOCK) { app.exit(0); }
+if (!GOT_LOCK) {
+  // Windows 实测 A21：只调 app.exit(0) 时二次启动的进程 25s 还不退（ready 前 exit 在 Windows 上会等 Chromium 子进程收尾）。
+  // 先 exit，再用 process.exit 兜底硬退，不让它往下建窗口/起内核。
+  try { app.exit(0); } catch (e) {}
+  process.exit(0);
+}
 
 function dlog(s) { try { fs.appendFileSync(LOGF, '[' + new Date().toISOString().slice(11, 19) + '] ' + s + '\n'); } catch (e) {} }
 if (GOT_LOCK) { try { fs.writeFileSync(LOGF, 'boot pid=' + process.pid + ' port=' + CTRL_PORT + ' state=' + STATE + ' v3=' + V3 + '\n'); } catch (e) {} }
@@ -328,7 +333,15 @@ function createMain(show) {
   mainWin.webContents.on('render-process-gone', (e, d) => dlog('ui render-gone ' + JSON.stringify(d)));
   mainWin.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   mainWin.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file:')) { e.preventDefault(); if (/^https?:/.test(url)) shell.openExternal(url); } });
-  mainWin.on('close', (e) => { if (!quitting) { e.preventDefault(); mainWin.hide(); buildTray(); } });
+  mainWin.on('close', (e) => {
+    if (quitting) return;
+    e.preventDefault();
+    // tray_close 关闭时：关窗即退出；开（默认）则缩到托盘。读不到设置按默认缩托盘
+    rpc('sniffdl.settings.get').then((s) => {
+      const v = s && (s.values || s);
+      return !(v && v.tray_close === false);
+    }).catch(() => true).then((toTray) => { if (toTray) { mainWin.hide(); buildTray(); } else quit(); });
+  });
   mainWin.on('show', buildTray); mainWin.on('hide', buildTray);
   mainWin.loadFile(UI_INDEX);
   if (show) mainWin.once('ready-to-show', () => showMain());
@@ -364,7 +377,7 @@ function buildTray() {
   const call = (m, ...p) => () => rpc(m, ...p).catch((e) => notify('操作失败', String(e.message || e)));
   try {
     tray.setToolTip('SniffDL' + (ready ? '' : '（内核启动中…）'));
-    tray.setContextMenu(Menu.buildFromTemplate([
+    const trayMenu = Menu.buildFromTemplate([
       { label: '显示主窗口', click: showMain },
       { type: 'separator' },
       { label: '开始全部', enabled: ready, click: call('sniffdl.all.resume') },
@@ -377,7 +390,9 @@ function buildTray() {
       { label: '切换 Q版 / 正常版', enabled: !!petWin, click: toggleChibi },
       { type: 'separator' },
       { label: '退出 SniffDL', click: quit },
-    ]));
+    ]);
+    tray.setContextMenu(trayMenu);
+    try { globalThis.__sdlTrayMenu = trayMenu; } catch (e) {}      // 给 Windows 实测用：按标签找菜单项直接 click（主进程检查器里取不到闭包变量）
   } catch (e) { dlog('tray menu err ' + e); }
 }
 
@@ -463,6 +478,7 @@ if (GOT_LOCK) app.whenReady().then(async () => {
   try {
     const ico = path.join(HERE, 'icon.png');
     tray = new Tray(fs.existsSync(ico) ? nativeImage.createFromPath(ico) : nativeImage.createEmpty());
+    try { globalThis.__sdlTray = tray; dlog('tray created bounds=' + JSON.stringify(tray.getBounds())); } catch (e) {}
     tray.on('click', showMain);
     tray.on('double-click', showMain);
   } catch (e) { dlog('tray err ' + e); }

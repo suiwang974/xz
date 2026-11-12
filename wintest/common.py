@@ -90,7 +90,15 @@ def make_file_server(size, delay=0.02, name="sample.bin"):
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(b - a))
-            self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+            # 文件名含中文时 http.server 的 latin-1 头编码会抛 UnicodeEncodeError（连接被重置）：
+            # 按 RFC 6266 给 ASCII 兜底名 + filename*=UTF-8''百分号编码（浏览器/aria2/IDM 都认）
+            try:
+                name.encode("ascii")
+                cd = 'attachment; filename="%s"' % name
+            except UnicodeEncodeError:
+                import urllib.parse as _up
+                cd = "attachment; filename=\"download.bin\"; filename*=UTF-8''%s" % _up.quote(name)
+            self.send_header("Content-Disposition", cd)
             self.end_headers()
             if self.command == "HEAD":
                 return
@@ -239,8 +247,22 @@ class NodeInspector:
                     raise RuntimeError(m["error"])
                 return m["result"]
 
+    def eval(self, expr):
+        """主进程里求值（返回值按 JSON 带回）。"""
+        r = self.call("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=True)
+        if r.get("exceptionDetails"):
+            raise RuntimeError(str(r["exceptionDetails"])[:300])
+        return r["result"].get("value")
+
     def on_tray(self, fn_decl):
-        """对主进程里唯一的 Tray 实例执行 function(){...}（this=tray），返回值按 JSON 带回。"""
+        """对主进程里唯一的 Tray 实例执行 function(){...}（this=tray），返回值按 JSON 带回。
+        优先用 main.js 暴露的 globalThis.__sdlTray；没有再用 queryObjects(Tray.prototype) 兜底。"""
+        r = self.call("Runtime.evaluate", expression="globalThis.__sdlTray && !globalThis.__sdlTray.isDestroyed() ? globalThis.__sdlTray : null")
+        oid = r["result"].get("objectId")
+        if oid:
+            r = self.call("Runtime.callFunctionOn", objectId=oid, returnByValue=True,
+                          functionDeclaration="function(){ return (" + fn_decl + ").call(this); }")
+            return r["result"].get("value")
         r = self.call("Runtime.evaluate", expression="(process.mainModule || module).require('electron').Tray.prototype")
         proto = r["result"]["objectId"]
         objs = self.call("Runtime.queryObjects", prototypeObjectId=proto)["objects"]["objectId"]

@@ -77,7 +77,8 @@ def main():
                 urllib.parse.parse_qs(s[3]).get("token") == ["abc 123&x"] and urllib.parse.parse_qs(s[3]).get("fmt") == ["zip"] for s in posts), posts)
             check("Content-Type 为 x-www-form-urlencoded", all("x-www-form-urlencoded" in s[2] for s in posts), posts)
             check("没有 400（下载器没丢 body）", True if all(True for _ in posts) else False)
-            check("浏览器自己没存 export.zip", not os.listdir(os.path.join(DATA, "browser_dl")), os.listdir(os.path.join(DATA, "browser_dl")))
+            _t_clean = wait(lambda: not os.listdir(os.path.join(DATA, "browser_dl")), 8)       # 浏览器取消下载后清理临时文件（UUID 名）有延迟
+            check("浏览器自己没存 export.zip（取消后临时文件清掉）", bool(_t_clean), os.listdir(os.path.join(DATA, "browser_dl")))
             print("SWLOG", sw.evaluate("self.__l"))
             ctx.close()
     finally:

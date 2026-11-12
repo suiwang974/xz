@@ -115,8 +115,12 @@ def match_profile(url):
     return None
 
 
-def profile_conn(profile, cfg=None, global_conn=16):
-    """该规则的有效连接数：cfg['netdisk_conn'][key] 可覆盖；不超过 aria2 硬顶与全局设置。"""
+SDL_CONN_MAX = 128           # SniffDL 自研动态分片引擎（sdl_speed）上限（A15，2026-11-12）
+
+
+def profile_conn(profile, cfg=None, global_conn=16, hard_max=ARIA2_CONN_MAX):
+    """该规则的有效连接数：cfg['netdisk_conn'][key] 可覆盖；不超过全局设置与 hard_max。
+    hard_max 默认 aria2 硬顶 16（给 aria2 用）；自研引擎调用时传 SDL_CONN_MAX，用户把某网盘覆盖到 >16 才生效。"""
     n = profile["conn"] if profile else global_conn
     try:
         ov = ((cfg or {}).get("netdisk_conn") or {}).get(profile["key"]) if profile else None
@@ -125,10 +129,14 @@ def profile_conn(profile, cfg=None, global_conn=16):
     except Exception:
         pass
     try:
-        n = min(int(n), int(global_conn) if global_conn else ARIA2_CONN_MAX)
+        hm = max(1, int(hard_max or ARIA2_CONN_MAX))
+    except Exception:
+        hm = ARIA2_CONN_MAX
+    try:
+        n = min(int(n), int(global_conn) if global_conn else hm)
     except Exception:
         pass
-    return max(1, min(n, ARIA2_CONN_MAX))
+    return max(1, min(int(n), hm))
 
 
 # ---------------------------------------------------------------------------

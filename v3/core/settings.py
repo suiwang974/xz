@@ -85,6 +85,10 @@ SCHEMA = [
     dict(key="task_conns", label="单任务连接数", type="select", default="自动",
          options=["自动", "1", "2", "4", "8", "16"], group="advanced", section="下载",
          help="直链多连接分段数（网盘按各家防封上限自动收紧）"),
+    dict(key="max_conns", label="最大连接数", type="select", default="自动",
+         options=["自动", "8", "16", "32", "64", "128"], group="advanced", section="下载",
+         help="直链/网盘单文件最多开几路。自动 = 从 8 路起按实测速度加，每加一批提速不到 5% 就停，最多 64 路；"
+              "遇到 429/503/连接被重置自动减。超过 16 路时改走 SniffDL 自研引擎（aria2 最多 16 路，仍作回退）"),
     dict(key="dl_threads", label="视频分片线程", type="select", default="自动",
          options=["自动", "16", "32", "64", "128", "256"], group="advanced", section="下载"),
     dict(key="dash_aria2", label="大站单文件也多线程", type="bool", default=True, group="advanced", section="下载"),
