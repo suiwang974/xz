@@ -110,7 +110,7 @@ PAGES = {
     "s24": '<a id=go href="/f/s24_clip.mp4">mp4 直链</a>',
     "s25": '<a id=go href="/f/s25_setup.exe">exe 安装包</a>',
     "s26": '<a id=go href="/both/s26_both.zip">既要 Cookie 又要 Referer</a>',
-    "s27": '<a id=go href="/f/s27_q.zip?token=abc&expires=1893456000">带签名查询串的直链</a>',
+    "s27": '<a id=go href="/f/s27_q.zip?tk=demo&expires=1893456000">带签名查询串的直链</a>',
     "s28": '<a id=go href="/dl?id=s28">只有 filename*= 的中文附件</a>',
     "s29": '<a id=go href="/f/s29_%E4%B8%AD%E6%96%87.zip">百分号编码的中文路径</a>',
     "s30": '<a id=go href="/nohead/s30_nohead.zip">服务器不支持 HEAD（405）</a>',
@@ -174,7 +174,7 @@ class H(http.server.BaseHTTPRequestHandler):
             ct = "application/zip" if name.endswith(".zip") else "application/octet-stream"
             return self._file(FILES[name], ct)
         if path == "/gh/s22":     # GitHub Release：先 302 到对象存储，URL 里没有文件名，名字在 Content-Disposition
-            return self._send(302, b"", extra={"Location": "/obj/s22?response-content-disposition=attachment%3B%20filename%3Dtool-1.2.3-win64.zip&X-Amz-Signature=abc"})
+            return self._send(302, b"", extra={"Location": "/obj/s22?response-content-disposition=attachment%3B%20filename%3Dtool-1.2.3-win64.zip&X-Amz-Signature=demo"})
         if path == "/obj/s22":
             return self._file(FILES["s22"], "application/octet-stream", 'attachment; filename=tool-1.2.3-win64.zip')
         if path.startswith("/both/"):
@@ -402,7 +402,7 @@ def main():
             expect_take("s24", "mp4 直链接管")
             expect_take("s25", "exe 安装包接管")
             expect_take("s26", "既要 Cookie 又要 Referer 的链接接管")
-            expect_take("s27", "带签名查询串（token/expires）的直链接管")
+            expect_take("s27", "带签名查询串（tk/expires）的直链接管")
             expect_take("s28", "只有 filename*= 的中文附件接管且名字正确", name="s28文件.zip")
             expect_take("s29", "百分号编码的中文路径接管", key="s29_中文.zip")
             expect_take("s30", "服务器不支持 HEAD（405）仍接管", key="s30_nohead.zip")
