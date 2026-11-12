@@ -1,0 +1,156 @@
+name: bench
+
+# SniffDL v3 与 IDM / aria2 同条件对比测速（wintest/bench/）。
+# 报告：Job Summary（测速报告.md）+ artifact bench-result（bench_result.json、测速报告.md、IDM 截图）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: "规模：full（A 1GB / D 500 个）或 small（100MB / 100 个）"
+        default: full
+        type: choice
+        options: [full, small]
+      runs:
+        description: "每个场景 × 工具跑几次"
+        default: "3"
+      scenarios:
+        description: "场景（逗号分隔）"
+        default: "A,B,C,D,E,R1,R2"
+      tools:
+        description: "工具（逗号分隔）"
+        default: "sdl,aria2,idm"
+  schedule:
+    - cron: "30 19 * * *"   # 每天 UTC 19:30 = 北京时间 03:30
+
+concurrency:
+  group: bench
+  cancel-in-progress: false
+
+env:
+  PYTHONIOENCODING: utf-8
+  NO_PROXY: 127.0.0.1,localhost,::1
+  ARIA2_URL: https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip
+  # IDM 官方下载页（每次先从这里抓当前 idman*.exe 链接）；抓不到时用下面的官方直链兜底
+  IDM_PAGE: https://www.internetdownloadmanager.com/download.html
+  IDM_FALLBACK_URL: https://download.internetdownloadmanager.com/idman643build18.exe
+
+jobs:
+  bench:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      BENCH_OUT: ${{ github.workspace }}\bench_out
+      BENCH_SCALE: ${{ github.event.inputs.scale || 'full' }}
+      BENCH_RUNS: ${{ github.event.inputs.runs || '3' }}
+      BENCH_SCENARIOS: ${{ github.event.inputs.scenarios || 'A,B,C,D,E,R1,R2' }}
+      BENCH_TOOLS: ${{ github.event.inputs.tools || 'sdl,aria2,idm' }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: pip deps
+        run: |
+          python -m pip install --disable-pip-version-check requests urllib3 pillow
+          New-Item -ItemType Directory -Force $env:BENCH_OUT | Out-Null
+
+      - name: Defender 排除测速目录（三家工具同等对待，减少实时扫描噪声）
+        continue-on-error: true
+        run: |
+          Add-MpPreference -ExclusionPath $env:RUNNER_TEMP, $env:BENCH_OUT -ErrorAction Stop
+          "excluded: $env:RUNNER_TEMP ; $env:BENCH_OUT"
+
+      - name: aria2c 1.37.0 (official win64)
+        run: |
+          Invoke-WebRequest $env:ARIA2_URL -OutFile aria2.zip
+          Expand-Archive aria2.zip -DestinationPath C:\aria2
+          $d = (Get-ChildItem C:\aria2 -Directory | Select-Object -First 1).FullName
+          & "$d\aria2c.exe" --version | Select-Object -First 1
+          "ARIA2C_EXE=$d\aria2c.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: IDM 试用版（官方安装包 /skipdlgs 静默安装）
+        id: idm
+        continue-on-error: true
+        run: |
+          $note = ""
+          try {
+            $url = $null
+            try {
+              $page = (Invoke-WebRequest $env:IDM_PAGE -UseBasicParsing -TimeoutSec 60).Content
+              $m = [regex]::Match($page, 'https?://[a-z0-9.\-]*internetdownloadmanager\.com/idman\d+build\d+\.exe')
+              if ($m.Success) { $url = $m.Value }
+            } catch { "download page fetch failed: $_" }
+            if (-not $url) { $url = $env:IDM_FALLBACK_URL; $note += "下载页未解析到链接，用兜底直链；" }
+            "IDM installer: $url"
+            Invoke-WebRequest $url -OutFile "$env:RUNNER_TEMP\idm_setup.exe" -TimeoutSec 300
+            $f = Get-Item "$env:RUNNER_TEMP\idm_setup.exe"
+            $sha = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
+            $sig = Get-AuthenticodeSignature $f.FullName
+            "size=$($f.Length) sha256=$sha signer=$($sig.SignerCertificate.Subject) status=$($sig.Status)"
+            if ($f.Length -lt 5MB) { throw "安装包太小（$($f.Length) 字节），可能不是安装程序" }
+            $p = Start-Process $f.FullName -ArgumentList '/skipdlgs' -PassThru
+            $exe = $null
+            $cands = @("${env:ProgramFiles(x86)}\Internet Download Manager\IDMan.exe", "$env:ProgramFiles\Internet Download Manager\IDMan.exe")
+            for ($i = 0; $i -lt 150 -and -not $exe; $i++) {
+              Start-Sleep 2
+              foreach ($c in $cands) { if (Test-Path $c) { $exe = $c } }
+            }
+            if (-not $exe) { throw "300 秒内没出现 IDMan.exe（静默安装未完成）" }
+            # 等安装程序退出（最多 120 秒），安装后自动启动的 IDM 先关掉，由 run_bench.py 写好注册表再起
+            for ($i = 0; $i -lt 60 -and -not $p.HasExited; $i++) { Start-Sleep 2 }
+            Start-Sleep 3
+            Get-Process IDMan -ErrorAction SilentlyContinue | Stop-Process -Force
+            $ver = (Get-Item $exe).VersionInfo.ProductVersion
+            "IDM_EXE=$exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+            $note += "官方 $([IO.Path]::GetFileName($url)) /skipdlgs 安装成功（$ver，签名 $($sig.Status)）"
+          } catch {
+            $note += "安装失败：$_"
+            Write-Warning $note
+          }
+          "IDM_INSTALL_NOTE=$note" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          $note
+
+      - name: run_bench.py
+        continue-on-error: true
+        timeout-minutes: 100
+        run: |
+          $ba = @("wintest/bench/run_bench.py", "--scale", $env:BENCH_SCALE, "--runs", $env:BENCH_RUNS,
+                    "--scenarios", $env:BENCH_SCENARIOS, "--tools", $env:BENCH_TOOLS, "--v3", "v3",
+                    "--aria2", $env:ARIA2C_EXE, "--out", $env:BENCH_OUT,
+                    "--work", "$env:RUNNER_TEMP\bench_work", "--data", "$env:RUNNER_TEMP\bench_data")
+          if ($env:IDM_EXE) { $ba += @("--idm", $env:IDM_EXE) }
+          python @args
+
+      - name: Job Summary
+        if: always()
+        run: |
+          $md = Join-Path $env:BENCH_OUT "测速报告.md"
+          if (Test-Path $md) {
+            Get-Content $md -Encoding utf8 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          } else {
+            "## 测速未生成报告`n`nIDM 安装：$env:IDM_INSTALL_NOTE" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Screenshot (diagnostics)
+        if: always()
+        continue-on-error: true
+        run: |
+          python -c "from PIL import ImageGrab; import os; ImageGrab.grab().save(os.path.join(os.environ['BENCH_OUT'], 'shot_final.png'))"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-result
+          path: ${{ env.BENCH_OUT }}
+          if-no-files-found: warn
+
+      - name: cleanup
+        if: always()
+        continue-on-error: true
+        run: Get-Process IDMan, aria2c -ErrorAction SilentlyContinue | Stop-Process -Force
