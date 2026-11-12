@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:*; img-src 'self' data: blob: file: http: https:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>SniffDL</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="side" aria-label="侧栏">
+    <div class="brand">
+      <div class="ava"><img src="assets/feiyu_avatar.png" alt=""></div>
+      <div><b>SniffDL</b><small id="brandSub">大肥鱼下载器</small></div>
+    </div>
+    <nav class="nav" id="nav" aria-label="导航"></nav>
+    <div class="spacer"></div>
+    <div class="speedcard" id="speedcard">
+      <div class="nums"><span class="down" id="spdDown">—</span><span class="up" id="spdUp">↑ —</span></div>
+      <canvas id="spdChart" aria-hidden="true"></canvas>
+      <div class="foot"><span id="spdLimit">不限速</span><button class="turtle" id="btnTurtle" title="乌龟模式：临时切到备用限速（Ctrl+T）"></button></div>
+    </div>
+  </aside>
+  <main class="main">
+    <section class="view" id="vDownloads">
+      <div class="adder" id="adder"></div>
+      <div class="view" id="tasksHost"></div>
+    </section>
+    <section class="view hidden" id="vPending"></section>
+    <section class="view hidden" id="vQueues"></section>
+    <section class="view hidden" id="vStats"></section>
+    <section class="view hidden" id="vLogs"></section>
+    <section class="view hidden" id="vSettings"></section>
+    <footer class="status" id="status" role="status"></footer>
+  </main>
+</div>
+<div class="boot" id="boot">
+  <div class="card">
+    <img src="assets/feiyu_avatar.png" alt="">
+    <div class="row"><span class="spin"></span><span id="bootMsg">正在连接下载内核…</span></div>
+    <div class="err" id="bootErr"></div>
+  </div>
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

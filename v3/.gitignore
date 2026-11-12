@@ -1,0 +1,15 @@
+config.json
+*.log
+pet_state*.json
+queue*.json
+downloaded.json
+__pycache__/
+*.pyc
+node_modules/
+*.sdl
+*.sdlpart
+outputs/
+_ref/
+*.bak*
+*.exe
+*.zip

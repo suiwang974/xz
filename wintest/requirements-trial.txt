@@ -1,0 +1,6 @@
+requests
+yt-dlp
+curl_cffi
+pillow
+pystray
+imageio-ffmpeg

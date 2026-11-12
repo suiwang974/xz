@@ -1,0 +1,160 @@
+{
+ "Version": 3,
+ "FileReferences": {
+  "Moc": "dfy.moc3",
+  "Textures": [
+   "desktop_tex/t0.webp",
+   "desktop_tex/t1.webp",
+   "desktop_tex/t2.webp",
+   "desktop_tex/t3.webp",
+   "desktop_tex/t4.webp"
+  ],
+  "Physics": "dfy.physics3.json",
+  "Motions": {
+   "Idle": [
+    {
+     "File": "anim/IDLE.motion3.json"
+    }
+   ],
+   "GrassOn": [
+    {
+     "File": "anim/狗尾草切换出来.motion3.json"
+    }
+   ],
+   "GrassOff": [
+    {
+     "File": "anim/狗尾草切回默认手.motion3.json"
+    }
+   ],
+   "FingerOn": [
+    {
+     "File": "anim/竖手指切出来动画.motion3.json"
+    }
+   ],
+   "FingerOff": [
+    {
+     "File": "anim/竖手指切回默认.motion3.json"
+    }
+   ],
+   "HandOn": [
+    {
+     "File": "anim/默认手切举手.motion3.json"
+    }
+   ],
+   "HandOff": [
+    {
+     "File": "anim/举手切默认手.motion3.json"
+    }
+   ]
+  },
+  "Expressions": [
+   {
+    "Name": "体型1",
+    "File": "exp/体型1.exp3.json"
+   },
+   {
+    "Name": "体型2",
+    "File": "exp/体型2.exp3.json"
+   },
+   {
+    "Name": "兔牙",
+    "File": "exp/兔牙.exp3.json"
+   },
+   {
+    "Name": "前倾",
+    "File": "exp/前倾.exp3.json"
+   },
+   {
+    "Name": "加载",
+    "File": "exp/加载.exp3.json"
+   },
+   {
+    "Name": "单片眼镜",
+    "File": "exp/单片眼镜.exp3.json"
+   },
+   {
+    "Name": "圈圈眼",
+    "File": "exp/圈圈眼.exp3.json"
+   },
+   {
+    "Name": "尾巴开关",
+    "File": "exp/尾巴开关.exp3.json"
+   },
+   {
+    "Name": "屑屑眼",
+    "File": "exp/屑屑眼.exp3.json"
+   },
+   {
+    "Name": "流冷汗",
+    "File": "exp/流冷汗.exp3.json"
+   },
+   {
+    "Name": "流泪",
+    "File": "exp/流泪.exp3.json"
+   },
+   {
+    "Name": "爱心眼",
+    "File": "exp/爱心眼.exp3.json"
+   },
+   {
+    "Name": "竖食指关",
+    "File": "exp/竖食指关.exp3.json"
+   },
+   {
+    "Name": "竖食指开",
+    "File": "exp/竖食指开.exp3.json"
+   },
+   {
+    "Name": "胸口衣服",
+    "File": "exp/胸口衣服.exp3.json"
+   },
+   {
+    "Name": "脱鞋",
+    "File": "exp/脱鞋.exp3.json"
+   },
+   {
+    "Name": "脸红",
+    "File": "exp/脸红.exp3.json"
+   },
+   {
+    "Name": "裙子切换",
+    "File": "exp/裙子切换.exp3.json"
+   },
+   {
+    "Name": "钢盆",
+    "File": "exp/钢盆.exp3.json"
+   },
+   {
+    "Name": "黑框眼镜",
+    "File": "exp/黑框眼镜.exp3.json"
+   },
+   {
+    "Name": "黑脸",
+    "File": "exp/黑脸.exp3.json"
+   },
+   {
+    "Name": "默认体型",
+    "File": "exp/默认体型.exp3.json"
+   },
+   {
+    "Name": "＞＜",
+    "File": "exp/＞＜.exp3.json"
+   }
+  ]
+ },
+ "Groups": [
+  {
+   "Target": "Parameter",
+   "Name": "EyeBlink",
+   "Ids": [
+    "ParamEyeROpen",
+    "ParamEyeLOpen"
+   ]
+  },
+  {
+   "Target": "Parameter",
+   "Name": "LipSync",
+   "Ids": []
+  }
+ ]
+}

@@ -1,0 +1,20 @@
+大肥鱼（DeepSeek-chan）Live2D 模型 · 使用条款说明
+=================================================
+
+本目录下的模型文件（dfy.moc3、dfy.physics3.json、desktop_tex/*.webp、anim/*、exp/*、
+大肥鱼.desktop.model3.json）不属于 SniffDL 自己的代码，版权归原作者所有：
+
+  立绘与拆分：Kamiya Ryoko
+  Live2D 制作：霓虹猫_NeonNeko
+
+作者条款（按用户提供的模型发布说明整理）：
+  1. 仅限个人使用。
+  2. 使用或二次创作须署名原作者。
+  3. 不得公开分发模型文件（包括把带模型的 SniffDL 安装包/压缩包上传到公开网盘、论坛、GitHub Release 等）。
+  4. 商业用途请先联系作者 Kamiya Ryoko 取得许可。
+
+SniffDL 只是在你本机离线加载这个模型；如需把 SniffDL 分享给别人，请先删掉
+pet_electron\app\model 目录（桌宠会自动不显示，下载功能不受影响），或自行取得作者授权。
+
+Live2D Cubism Core（page/lib/cubismcore.js）受 Live2D Proprietary Software License 约束，
+仅可随本程序在本机使用：https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_cn.html

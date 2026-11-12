@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+v3/docs/memory_archive_*
+v3/docs/待并入问题.md
+v3/docs/每日计划/
+v3/待删清单_*
+v3/context/
+v3/memory/
+v3/todo/
+v3/HANDOVER*
+v3/*交接*
+v3/背景/
+v3/**/*.psd
+v3/**/pet_state*.json
+v3/**/queue*.json
+v3/**/config.json
+v3/**/*.log

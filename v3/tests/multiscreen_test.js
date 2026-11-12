@@ -1,0 +1,13 @@
+const {unionBounds,displayAt}=require('../pet_electron/app/screens');
+let f=0;const t=(n,c)=>{console.log((c?'PASS ':'FAIL ')+n);if(!c)f++;};
+const A={bounds:{x:0,y:0,width:1920,height:1080},workArea:{x:0,y:0,width:1920,height:1040}};
+const B={bounds:{x:1920,y:-200,width:2560,height:1440},workArea:{x:1920,y:-200,width:2560,height:1400}};
+const C={bounds:{x:-1280,y:100,width:1280,height:1024},workArea:{x:-1280,y:100,width:1280,height:984}};
+const u=unionBounds([A,B]);t('右扩展并集',u.x===0&&u.y===-200&&u.width===4480&&u.height===1400);
+const u3=unionBounds([A,B,C]);t('三屏并集',u3.x===-1280&&u3.width===5760);
+t('单屏',JSON.stringify(unionBounds([A]))===JSON.stringify(A.workArea));
+t('空返回null',unionBounds([])===null);
+t('光标在B',displayAt([A,B],{x:3000,y:0})===B);
+t('光标越界回落首屏',displayAt([A,B],{x:9999,y:9999})===A);
+t('移除屏后重铺',unionBounds([A]).width===1920);
+process.exit(f?1:0);

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SniffDL 下载接管</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部：看板娘身份条（头像画框 + 名字 + 台词 + 连接灯），随当前世界换肤 -->
+    <header class="hero" id="hero">
+      <svg class="motif motif-a" viewBox="0 0 24 24" aria-hidden="true"><use id="motifUseA" href="#m-heart" /></svg>
+      <svg class="motif motif-b" viewBox="0 0 24 24" aria-hidden="true"><use id="motifUseB" href="#m-heart" /></svg>
+      <div class="avatar" id="avatar">
+        <img id="avatarImg" alt="" />
+        <span class="avatar-motif" id="avatarMotif">✦</span>
+      </div>
+      <div class="heroText">
+        <div class="charName" id="charName">SniffDL</div>
+        <div class="charRole" id="charRole">下载接管中…</div>
+      </div>
+      <div class="conn" id="conn" title="与本机 SniffDL 的连接">
+        <span class="dot" id="connDot"></span><span id="connText">检测中</span>
+      </div>
+    </header>
+
+    <section class="card">
+      <label class="switchRow">
+        <span class="switchLabel"><i class="tick"></i>接管浏览器下载</span>
+        <span class="switch">
+          <input type="checkbox" id="enabled" />
+          <span class="slider"></span>
+        </span>
+      </label>
+      <label class="switchRow">
+        <span class="switchLabel"><i class="tick"></i>视频悬浮下载按钮</span>
+        <span class="switch">
+          <input type="checkbox" id="hoverBtn" />
+          <span class="slider"></span>
+        </span>
+      </label>
+      <div class="hint" id="takeHint">开启后，浏览器里点到的文件都会交给看板娘搬运；右键链接 / 视频会有小框轻轻问一句。</div>
+    </section>
+
+    <section class="card acts">
+      <div class="cardTitle"><i class="tick"></i>快捷搬运</div>
+      <div class="actBtns">
+        <button id="sniff" class="primary">嗅探本页媒体</button>
+      </div>
+      <div class="pushRow">
+        <input type="text" id="pushUrl" placeholder="粘贴一条直链 / 视频页，交给看板娘" />
+        <button id="pushGo" class="ghost">转交</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="cardTitle"><i class="tick"></i>接管设置</div>
+      <div class="row">
+        <label>本地端口</label>
+        <input type="number" id="port" min="1" max="65535" />
+      </div>
+      <div class="row">
+        <label>Token</label>
+        <input type="text" id="token" placeholder="（无则留空）" />
+      </div>
+      <div class="row">
+        <label>只接管 ≥</label>
+        <input type="number" id="minSizeMB" min="0" step="1" />
+        <span class="unit">MB（0=不限）</span>
+      </div>
+      <div class="row">
+        <label>扩展名白名单</label>
+        <input type="text" id="onlyExtensions" placeholder="留空=全部，如 exe,zip,mp4" />
+      </div>
+      <div class="btns">
+        <button id="save" class="primary">保存</button>
+        <button id="test" class="ghost">测试连接</button>
+      </div>
+      <div class="statusMsg" id="statusMsg"></div>
+    </section>
+
+    <section class="card tasks">
+      <div class="cardTitle"><i class="tick"></i>搬运中 / 稍后 / 最近</div>
+      <ul id="taskList"><li class="empty">暂无任务</li></ul>
+    </section>
+
+    <section class="card tasks">
+      <div class="cardTitle withBtn"><i class="tick"></i><span>最近嗅探的页面</span>
+        <button id="clearSniff" class="miniGhost">清空</button>
+      </div>
+      <ul id="recentSniff"><li class="empty">还没有记录，去视频页嗅探一次就有了</li></ul>
+    </section>
+  </div>
+
+  <!-- 母题符号（heart/star/blossom/diamond），applyTheme 按当前世界切换 -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="m-heart" viewBox="0 0 24 24"><path d="M12 21s-7.5-4.6-10-9.3C.4 8.4 2 5 5.3 5c2 0 3.3 1.1 4.2 2.4l.5.8.5-.8C11.9 6.1 13.2 5 15.2 5 18.5 5 20 8.4 22 11.7 19.5 16.4 12 21 12 21z"/></symbol>
+    <symbol id="m-star" viewBox="0 0 24 24"><path d="M12 2l2.7 6.3 6.8.6-5.1 4.5 1.5 6.7L12 17l-6 3.6 1.5-6.7L2.4 8.9l6.8-.6z"/></symbol>
+    <symbol id="m-blossom" viewBox="0 0 24 24"><path d="M12 3c1.6 0 2.6 1.6 2.2 3.2 1.2-1 3-.7 3.7.6.7 1.3 0 3-1.5 3.4 1.6.2 2.8 1.6 2.6 3.2-.2 1.5-1.8 2.4-3.3 1.9.7 1.4.2 3.1-1.2 3.7-1.4.6-3-.2-3.4-1.7-.4 1.5-2 2.3-3.4 1.7-1.4-.6-1.9-2.3-1.2-3.7-1.5.5-3.1-.4-3.3-1.9-.2-1.6 1-3 2.6-3.2-1.5-.4-2.2-2.1-1.5-3.4.7-1.3 2.5-1.6 3.7-.6C9.4 4.6 10.4 3 12 3z"/></symbol>
+    <symbol id="m-diamond" viewBox="0 0 24 24"><path d="M12 2l6 10-6 10-6-10z"/></symbol>
+  </svg>
+  <script src="popup.js"></script>
+</body>
+</html>

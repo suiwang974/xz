@@ -1,0 +1,8 @@
+{
+  "name": "sniffdl",
+  "productName": "SniffDL",
+  "version": "3.0.0",
+  "description": "SniffDL v3 unified host (Electron 33.4.11): downloader UI + DeepSeek-chan (大肥鱼) Live2D pet + tray",
+  "main": "main.js",
+  "private": true
+}

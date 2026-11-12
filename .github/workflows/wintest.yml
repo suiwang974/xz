@@ -1,0 +1,210 @@
+name: wintest
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: wintest
+  cancel-in-progress: true
+
+env:
+  PYTHONIOENCODING: utf-8
+  NO_PROXY: 127.0.0.1,localhost,::1
+  ARIA2_URL: https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      WINTEST_OUT: ${{ github.workspace }}\wintest_out
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Screen 1920x1080
+        continue-on-error: true
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop; "Set-DisplayResolution ok" } catch {
+            Add-Type -TypeDefinition @"
+          using System; using System.Runtime.InteropServices;
+          public class Res {
+           [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+           public struct DM { [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string n; public short a; public short b; public short size; public short ex; public int fields; public int px; public int py; public int ori; public int fo; public short col; public short dup; public short yr; public short tt; public short coll; [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string fn; public short lp; public int bpp; public int w; public int h; public int fl; public int fq; public int i1; public int i2; public int i3; public int i4; public int r1; public int r2; public int pw; public int ph; }
+           [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int EnumDisplaySettings(string d, int m, ref DM dm);
+           [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int ChangeDisplaySettings(ref DM dm, int f);
+           public static int Set(int w,int h){ DM dm=new DM(); dm.size=(short)Marshal.SizeOf(typeof(DM)); EnumDisplaySettings(null,-1,ref dm); dm.w=w; dm.h=h; dm.fields=0x80000|0x100000; return ChangeDisplaySettings(ref dm,0);} }
+          "@
+            "ChangeDisplaySettings rc=" + [Res]::Set(1920,1080)
+          }
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: pip deps
+        run: |
+          python -m pip install --disable-pip-version-check -r wintest/requirements-ci.txt
+          python -m playwright install chromium
+          python -c "import tkinter, sys; print('tk', tkinter.TkVersion, sys.version)"
+
+      - name: aria2c 1.37.0 (official win64)
+        run: |
+          Invoke-WebRequest $env:ARIA2_URL -OutFile aria2.zip
+          Expand-Archive aria2.zip -DestinationPath C:\aria2
+          $d = (Get-ChildItem C:\aria2 -Directory | Select-Object -First 1).FullName
+          & "$d\aria2c.exe" --version | Select-Object -First 1
+          "$d" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          "SNIFFDL_ARIA2C=$d\aria2c.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: electron@33 (v3/pet_electron/app)
+        working-directory: v3/pet_electron/app
+        run: |
+          npm install electron@33.4.11 --no-save --no-package-lock --no-audit --no-fund
+          $e = (Resolve-Path node_modules\electron\dist\electron.exe).Path
+          & node -e "console.log(require('electron/package.json').version)"
+          "SNIFFDL_ELECTRON=$e" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: 1 test_netdisk_rules
+        continue-on-error: true
+        run: python wintest/run.py netdisk_rules python v3/tools/test_netdisk_rules.py
+
+      - name: 2 netdisk_e2e (real aria2c.exe)
+        continue-on-error: true
+        run: python wintest/run.py netdisk_e2e python v3/tools/netdisk_e2e.py --aria2c "$env:SNIFFDL_ARIA2C"
+
+      - name: 3 bt_orphan_mock_test
+        continue-on-error: true
+        run: python wintest/run.py bt_orphan_mock python v3/tools/bt_orphan_mock_test.py
+
+      - name: 4 ui_smoke (real tk, Playwright Chromium)
+        continue-on-error: true
+        run: |
+          Remove-Item v3/docs/ui_shots/* -Force -ErrorAction SilentlyContinue
+          python wintest/run.py ui_smoke python v3/tests/ui_smoke.py
+          New-Item -ItemType Directory -Force "$env:WINTEST_OUT\ui_shots" | Out-Null
+          Copy-Item v3/docs/ui_shots/* "$env:WINTEST_OUT\ui_shots" -ErrorAction SilentlyContinue
+
+      - name: 5 core (中文路径 / MOTW / 防睡眠 / parent-pid / BT 孤儿真 PowerShell)
+        continue-on-error: true
+        run: python wintest/run.py win_core python wintest/win_core_test.py
+
+      - name: 6 host Electron (录屏)
+        continue-on-error: true
+        run: python wintest/run.py win_host python wintest/win_host_test.py
+
+      - name: 7 extension in Edge / Chrome
+        continue-on-error: true
+        run: python wintest/run.py win_ext python wintest/win_ext_test.py
+
+      - name: 8 edit video
+        if: always()
+        continue-on-error: true
+        run: |
+          if (Test-Path "$env:WINTEST_OUT\host_raw.mp4") {
+            python wintest/run.py edit_host python wintest/edit_video.py "$env:WINTEST_OUT\host_raw.mp4" "$env:WINTEST_OUT\host_timeline.json" "$env:WINTEST_OUT\SniffDL_win_host_demo.mp4"
+          }
+          Get-ChildItem $env:WINTEST_OUT -Filter *.mp4 | Select-Object Name, Length
+
+      - name: summary
+        if: always()
+        run: python wintest/summary.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wintest-results
+          retention-days: 7
+          path: |
+            wintest_out/
+            !wintest_out/*_raw.mp4
+
+  trial:
+    needs: test
+    if: always()
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      WINTEST_OUT: ${{ github.workspace }}\wintest_out_trial
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Screen 1920x1080
+        continue-on-error: true
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop } catch { "no Set-DisplayResolution" }
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: aria2c 1.37.0
+        run: |
+          Invoke-WebRequest $env:ARIA2_URL -OutFile aria2.zip
+          Expand-Archive aria2.zip -DestinationPath C:\aria2
+          $d = (Get-ChildItem C:\aria2 -Directory | Select-Object -First 1).FullName
+          "ARIA2_DIR=$d" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: electron@33
+        working-directory: v3/pet_electron/app
+        run: npm install electron@33.4.11 --no-save --no-package-lock --no-audit --no-fund
+
+      - name: assemble SniffDL_v3_trial_win64
+        run: |
+          python wintest/make_trial.py "$env:RUNNER_TEMP\SniffDL_v3_trial_win64" "$env:pythonLocation" "v3\pet_electron\app\node_modules\electron\dist" "$env:ARIA2_DIR\aria2c.exe"
+          7z a -tzip -mx=5 "$env:RUNNER_TEMP\SniffDL_v3_trial_win64.zip" "$env:RUNNER_TEMP\SniffDL_v3_trial_win64\*" | Select-Object -Last 3
+          "{0:N1} MB" -f ((Get-Item "$env:RUNNER_TEMP\SniffDL_v3_trial_win64.zip").Length / 1MB)
+
+      - name: CI deps for smoke (after copying python)
+        run: python -m pip install --disable-pip-version-check -r wintest/requirements-ci.txt
+
+      - name: unzip to 中文+空格 path and smoke (录屏)
+        continue-on-error: true
+        run: |
+          $dst = "C:\测试用户\试用 解压\SniffDL_v3_trial_win64"
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          7z x "$env:RUNNER_TEMP\SniffDL_v3_trial_win64.zip" "-o$dst" -y | Select-Object -Last 2
+          python wintest/run.py trial_smoke python wintest/trial_smoke.py "$dst"
+
+      - name: edit video
+        if: always()
+        continue-on-error: true
+        run: |
+          if (Test-Path "$env:WINTEST_OUT\trial_raw.mp4") {
+            python wintest/run.py edit_trial python wintest/edit_video.py --target 60 "$env:WINTEST_OUT\trial_raw.mp4" "$env:WINTEST_OUT\trial_timeline.json" "$env:WINTEST_OUT\SniffDL_trial_demo.mp4"
+          }
+          python wintest/summary.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SniffDL_v3_trial_win64
+          retention-days: 7
+          path: ${{ runner.temp }}/SniffDL_v3_trial_win64/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trial-smoke-results
+          retention-days: 7
+          path: |
+            wintest_out_trial/
+            !wintest_out_trial/*_raw.mp4

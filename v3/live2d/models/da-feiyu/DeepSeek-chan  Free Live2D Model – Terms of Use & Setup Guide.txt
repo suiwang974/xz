@@ -1,0 +1,146 @@
+DeepSeek-chan Free Live2D Model — Terms of Use
+Please read before using
+
+Thank you for downloading and using this Live2D model!
+
+This is a free-to-use Live2D model released to the public. We hope it helps more people discover DeepSeek-chan, and you're welcome to use her in livestreams, videos, and everyday content creation.
+
+Please read the following terms before using the model. By downloading or using it, you acknowledge and agree to follow these guidelines.
+
+---
+
+## 1. Permitted Uses
+
+✅ Personal Livestreaming & Video Creation
+
+You may use this model for VTuber livestreams, recorded streams, video uploads, short-form videos, and other personal content.
+
+✅ Earning Revenue Through Content Creation
+
+You are allowed to receive platform donations, gifts, memberships, creator rewards, video revenue, and other income generated through your livestreams or videos.
+
+Normal personal content creation and platform monetization are permitted.
+
+✅ Social Media & Showcases
+
+You may showcase content featuring this model on Bilibili, YouTube, Twitter (X), and other social media platforms.
+
+✅ Adjusting Model Settings
+
+You may adjust the model's display, tracking, expressions, physics, and other in-app settings according to your preferences.
+
+✅ Personal Derivative Works
+
+Feel free to create memes, edits, animations, illustrations, and other derivative content featuring DeepSeek-chan.
+
+Please credit the original model source when publicly sharing your work.
+
+---
+
+## 2. Prohibited Uses
+
+❌ No Reselling
+
+You may not repackage, rename, modify the packaging of, or otherwise sell the complete model files provided by the creator. Selling or transferring usage rights to the model is also prohibited.
+
+❌ No Unauthorized Redistribution
+
+You may not re-upload the complete model files to cloud storage, asset websites, or other platforms for direct download by others.
+
+If you would like to recommend the model to someone, please share the original download page instead.
+
+❌ No Impersonating the Original Creators
+
+You may not claim or imply that you are the original model creator, illustrator, or Live2D rigger.
+
+You must not deliberately remove or hide the original creators' information in a way that misleads others.
+
+❌ No False Claims of Ownership or Creation
+
+You may not present the officially distributed model as your own original work, independently created model, or self-developed release.
+
+❌ No Illegal or Infringing Use
+
+You may not use this model for illegal activities, fraud, malicious impersonation, or any other purpose that infringes upon the legitimate rights of others.
+
+---
+
+## 3. Commercial Use & Business Inquiries
+
+Personal livestreaming and video creation are permitted, even when they generate platform revenue. Such activities are not prohibited commercial use under these terms.
+
+However, please contact the creator for approval in advance before using the model for
+
+- Brand advertisements, sponsorships, and product promotions.
+- Corporate promotions, commercial events, or other commercial projects in which the model is used as a promotional centerpiece.
+- Including the model as part of paid products, paid assets, or other commercial products.
+
+In short Personal use and ordinary content monetization are welcome. However, this does not grant permission to freely resell the model itself or authorize third parties to use it commercially.
+
+---
+
+## 4. Credit Requirements
+
+When publicly sharing content created with this model, please credit the model's creators and source.
+
+Model Name DeepSeek-chan
+
+- Illustration & PSD Layer Separation Kamiya Ryoko
+- Live2D Rigging 霓虹猫_NeonNeko
+- Model Release Free model distributed by Kamiya Ryoko
+
+You may adjust the credit format depending on the platform. We recommend placing credits in your video description, livestream description, artwork description, or another appropriate location.
+
+---
+
+## 5. Simple Setup Guide
+
+VTube Studio is the only software we recommend for using this model.
+
+1. Extract the Model Files
+
+After downloading the ZIP archive, extract all files before using the model. Do not run the model directly from inside the compressed archive.
+
+2. Import the Model
+
+Open VTube Studio and navigate to the model management interface. Open the software's custom model folder.
+
+Copy the entire extracted model folder into that directory.
+
+3. Select the Model
+
+Return to the model selection screen in VTube Studio and select DeepSeek-chan.
+
+4. Set Up Your Camera
+
+Follow the software's instructions to enable camera permissions and complete basic face tracking and parameter settings.
+
+Once everything is set up, you're ready to go!
+
+Helpful Tips
+
+- Please keep the original folder structure intact. Do not arbitrarily delete or rename model files.
+- If the model does not appear correctly, check whether all files have been extracted and placed in the correct directory.
+- If you choose to use other software that supports Live2D, please refer to that software's own import instructions.
+
+---
+
+## 6. About the Model & Creator
+
+Thank you so much for choosing to use DeepSeek-chan!
+
+This free model release is intended not only to give everyone a Live2D character to enjoy, but also to provide useful reference and practice material for those who are learning Live2D.
+
+You're welcome to use DeepSeek-chan in livestreams, create videos, share your work, and explore your own creative ideas.
+
+For usage questions or commercial collaboration inquiries, please contact the creator through the following platforms.
+
+Model Publisher  Illustrator & PSD Layer Separation Kamiya Ryoko
+
+VGen httpsvgen.coKAMIYA
+
+Twitter (X) @kamiya_ryoko
+
+Thank you for your support, and have fun using DeepSeek-chan!
+
+Enjoy your time with DeepSeek-chan!

@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>大肥鱼 · SniffDL 桌宠</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;width:100%;background:transparent;overflow:hidden;
+    font-family:"Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;-webkit-user-select:none;user-select:none;}
+  #cv{display:block;position:fixed;inset:0;width:100%;height:100%;background:transparent;}
+  /* 大肥鱼蓝主题气泡 */
+  #bub{position:fixed;left:50%;transform:translateX(-50%);top:6px;max-width:86%;
+    padding:10px 16px;border-radius:16px;
+    background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(238,243,251,.97));
+    color:#1F2A44;font-size:14px;line-height:1.5;
+    box-shadow:0 10px 30px rgba(22,34,63,.22),0 0 0 1px rgba(62,111,208,.28) inset;
+    border-bottom:3px solid #38C6D9;
+    opacity:0;transition:opacity .28s;pointer-events:none;z-index:20;
+    white-space:pre-wrap;text-align:center;}
+  #bub::after{content:"";position:absolute;left:50%;bottom:-7px;transform:translateX(-50%);
+    width:0;height:0;border:7px solid transparent;border-top-color:#38C6D9;border-bottom:0;}
+  #err{position:fixed;left:8px;top:8px;color:#c0392b;font-size:12px;z-index:30;display:none;
+    background:rgba(255,255,255,.8);padding:4px 8px;border-radius:6px;max-width:90%;word-break:break-all;}
+  /* 右键圆盘：悬停扇区放大+强发光+图标弹跳+文字高亮，开环 pop-in */
+  #petRing{animation:ringIn .2s cubic-bezier(.34,1.56,.64,1);}
+  @keyframes ringIn{from{opacity:0;transform:translateY(-50%) scale(.78);}to{opacity:1;transform:translateY(-50%) scale(1);}}
+  #petRing svg path[data-cmd]{transition:transform .16s cubic-bezier(.34,1.56,.64,1), fill .16s ease, filter .16s ease;
+    transform-box:fill-box; transform-origin:center;}
+  #petRing svg path[data-cmd]:hover{transform:scale(1.11); fill:#d6e6fb;
+    filter:drop-shadow(0 0 18px rgba(62,111,208,.78)) drop-shadow(0 0 5px rgba(56,198,217,.75));}
+  #petRing svg g{transition:transform .16s cubic-bezier(.34,1.56,.64,1);transform-box:fill-box;transform-origin:center;}
+  #petRing svg path[data-cmd]:hover + g{transform:scale(1.18);}
+  #petRing svg g text{transition:fill .16s ease;}
+  #petRing svg path[data-cmd]:hover + g text{fill:#3E6FD0;font-weight:700;}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="bub"></div>
+<div id="err"></div>
+<script src="libs/live2dcubismcore.min.js"></script>
+<script src="libs/pixi.min.js"></script>
+<script src="libs/cubism4.min.js"></script>
+<script>
+(function(){
+  'use strict';
+  var errEl = document.getElementById('err');
+  function fatal(msg){ try{ errEl.style.display='block'; errEl.textContent='大肥鱼加载失败: '+msg; }catch(e){}
+    window.__err=String(msg); }
+
+  // ---- 大肥鱼人设 / 主题（与主程序一致：宝蓝 3E6FD0 · 青宝石 38C6D9 · 藏青 16223F）----
+  var THEME={primary:'#3E6FD0',accent:'#38C6D9',ink:'#1F2A44',ink2:'#5C6880',card:'#FFFFFF',line:'#D7E0F0',bg:'rgba(238,243,251,.92)'};
+
+  // ---- 情绪反应 → 表情 + 动作 + 台词（表情名严格匹配 model3.json 的 Name）----
+  // 人设：DeepSeek 拟人「大肥鱼/鲸鱼娘」——傲娇+天然呆、爱白饭/token/摸鱼、
+  // 自嘲「吃白饭的大肥鱼」、被嫌便宜会炸毛「真当我是便宜货啊」、慢/困自称
+  // 「DeepSleep」，爱白饭/token/摸鱼/打瞌睡，嘴硬但很会关心主人。（自由创作人设）
+  var REACT={
+    happy:     {expr:'爱心眼.exp3', motion:'TapBody', idx:[0,6], line:"嘿嘿成了！…奖励本鱼一口白饭呗～"},
+    done:      {expr:'兔牙.exp3',   motion:'TapBody', idx:[6],   line:"搞定！这点小事，吃白饭的大肥鱼还是办得到的。"},
+    celebrate: {expr:'爱心眼.exp3', motion:'TapBody', idx:[6],   line:"哇—赢麻了！本鱼就是这么能干，哼！"},
+    busy:      {expr:'加载.exp3',   motion:null,                line:"跑着呢跑着呢…本鱼推理中，稍等一下下。"},
+    fail:      {expr:'流冷汗.exp3', motion:'Idle',              line:"翻车了…才不是我菜，是这破站太离谱！"},
+    sad:       {expr:'流泪.exp3',   motion:'Idle',              line:"呜…被玩坏了，我要 DeepSleep 一下再来。"},
+    surprise:  {expr:'圈圈眼.exp3', motion:'TapBody', idx:[3],  line:"诶?! 什么情况?!"},
+    shy:       {expr:'脸红.exp3',   motion:null,                line:"别、别夸了…本鱼会当真的啦。"},
+    pout:      {expr:'黑脸.exp3',   motion:null,                line:"哼，真当我是便宜货啊，我推理起来可猛了。"},
+    angry:     {expr:'黑脸.exp3',   motion:null,                line:"再说我便宜…我就、我就闹脾气了哦！"},
+    found:     {expr:'屑屑眼.exp3', motion:'TapBody', idx:[2],  line:"嘿，捞到一堆宝贝，要不要本鱼列个清单？"},
+    idle:      {expr:null,          motion:'Idle',              line:""}
+  };
+  // 圆盘"换表情"轮播池：模型自带 23 个表情全部纳入（好玩/常用优先排前面）
+  var EXPR_CYCLE=['爱心眼.exp3','兔牙.exp3','脸红.exp3','圈圈眼.exp3','＞＜.exp3','流冷汗.exp3','流泪.exp3','屑屑眼.exp3','黑脸.exp3','加载.exp3','单片眼镜.exp3','黑框眼镜.exp3','前倾.exp3','钢盆.exp3','脱鞋.exp3','胸口衣服.exp3','裙子切换.exp3','尾巴开关.exp3','竖食指开.exp3','竖食指关.exp3','体型1.exp3','体型2.exp3','默认体型.exp3'];
+  var exprCursor=0;
+
+  var app=null, model=null, modelReady=false;
+  var bubbleTimer=0, mouthTimer=0, exprRevertTimer=0;
+  var lastMotionAt=0, lastMotionGroup='';
+  var lastReactAt=0, lastSpeechAt=0;
+
+  function core(){ try{ return model && model.internalModel && model.internalModel.coreModel; }catch(e){ return null; } }
+  function setParam(id,val,w){ var c=core(); if(c&&c.setParameterValueById){ try{ c.setParameterValueById(id,val,w===undefined?1:w);}catch(e){} } }
+  function setPart(id,op){ var c=core(); if(c&&c.setPartOpacityById){ try{ c.setPartOpacityById(id,op);}catch(e){} } }
+  // 大肥鱼（高细节版 moc3）鼻子部件贴图发黑，渲染成鼻梁一块黑标 → 隐藏鼻子部件，脸面干净。
+  // 官方低配版靠 Paramcol_3=1 消除水印；本版无该参数，改用隐藏 Part 的方式，二者都保留以防不同版本。
+  var HIDE_PARTS=['Part10','Part46'];
+
+  // ================= 模型加载 =================
+  function loadModel(){
+    try{
+      app = new PIXI.Application({
+        view: document.getElementById('cv'),
+        resizeTo: window,
+        backgroundAlpha: 0,
+        antialias: true,
+        autoDensity: true,
+        resolution: Math.max(1, window.devicePixelRatio||1)
+      });
+    }catch(e){ fatal('PIXI 初始化: '+e.message); return; }
+
+    PIXI.live2d.Live2DModel.from('models/da-feiyu/大肥鱼.model3.json', { autoInteract:false })
+      .then(function(m){
+        model=m;
+        window.__modelRef=m;   // 调试/验收：外部可取 coreModel 读参数
+        model.anchor.set(0.5,0.5);
+        model.eventMode='none';
+        app.stage.addChild(model);
+        fit();
+        modelReady=true;
+        window.__petModelReady=true;
+        // 消除鼻梁黑标：低配版置 Paramcol_3=1（本版无此参数，无害）；高配版隐藏鼻子部件。
+        setParam('Paramcol_3', 1);
+        HIDE_PARTS.forEach(function(id){ setPart(id, 0); });
+        // 起始：默认表情 + 待机动作
+        try{ resetExpression(); }catch(e){}
+        playMotion('Idle',0,true);
+        window.__ok=true;
+        try{ setTimeout(timeGreet, 3200); }catch(e){}   // 就绪后按时段主动打个招呼
+        // 表情/动作切换会重置参数与部件不透明度 → 每帧保持"无水印/无黑鼻"。
+        try{ if(app&&app.ticker) app.ticker.add(function(){
+          setParam('Paramcol_3',1);
+          HIDE_PARTS.forEach(function(id){ setPart(id,0); });
+        }); }catch(e){}
+      })
+      .catch(function(e){ fatal((e&&e.message)||e); });
+  }
+
+  function fit(){
+    if(!model||!app) return;
+    model.scale.set(1);
+    var b=model.getLocalBounds();
+    var sw=app.screen.width, sh=app.screen.height;
+    // 顶部预留 ~19% 给气泡，避免缩小后气泡压在她头上
+    var headroom = sh*0.19;
+    var availH = Math.max(1, sh - headroom);
+    var s=Math.min(sw/(b.width||1), availH/(b.height||1))*0.95;
+    model.scale.set(s);
+    model.x=sw/2;
+    model.y=headroom + availH/2;
+  }
+
+  // 空闲时定期换待机小动作，保持"活着"
+  setInterval(function(){
+    if(!modelReady) return;
+    var now=Date.now();
+    if(now-lastMotionAt>7000){ playMotion('Idle',0,true); }
+  }, 3000);
+
+  window.addEventListener('resize', function(){ if(app&&model) fit(); });
+
+  // ================= 表情 / 动作 =================
+  function playMotion(group, idx, force){
+    if(!model||!group) return;
+    var now=Date.now();
+    if(!force && now-lastMotionAt<1200) return;
+    lastMotionAt=now; lastMotionGroup=group;
+    try{ model.motion(group, (idx==null||!Number.isInteger(idx))?0:idx, 2); }catch(e){}
+  }
+  function setExpression(name){
+    if(!model||!name) return;
+    try{ Promise.resolve(model.expression(name)).catch(function(){}); }catch(e){}
+  }
+  function resetExpression(){
+    try{
+      var mgr=model&&model.internalModel&&model.internalModel.expressionManager;
+      if(mgr&&mgr.resetExpression){ mgr.resetExpression(); return; }
+    }catch(e){}
+    // 兜底：切回默认体型
+    setExpression('默认体型.exp3');
+  }
+  // 情绪恢复：反应一段时间后回到待机
+  function scheduleRevert(ms){
+    clearTimeout(exprRevertTimer);
+    exprRevertTimer=setTimeout(function(){ resetExpression(); playMotion('Idle',0,true); }, ms||5200);
+  }
+
+  function applyReact(name){
+    var r=REACT[name]||REACT.idle;
+    lastReactAt=Date.now();
+    if(r.expr){ setExpression(r.expr); } else { resetExpression(); }
+    if(r.motion){ var idx=0; if(r.idx&&r.idx.length){ idx=r.idx[Math.floor(Math.random()*r.idx.length)]; } playMotion(r.motion, idx, true); }
+    if(r.line){ bubble(r.line, 4200); }   // 动作/表情与台词绑定：有台词就同步说出
+    if(name!=='idle' && name!=='busy') scheduleRevert(name==='busy'?9000:5200);
+  }
+
+  // 待机自主行为（换表情/比手势 + 说对应台词）统一在下方「生命感」区实现。
+
+  // 口型：说话期间嘴部张合
+  function mouthActive(ms){
+    clearTimeout(mouthTimer);
+    var t0=performance.now(), dur=ms||3000;
+    (function tick(){
+      var dt=performance.now()-t0;
+      if(dt>=dur){ setParam('ParamMouthOpenY',0); return; }
+      var v=0.5+0.5*Math.sin(dt/90);
+      setParam('ParamMouthOpenY', v*0.6);
+      requestAnimationFrame(tick);
+    })();
+  }
+
+  // ================= 气泡 =================
+  var bub=document.getElementById('bub');
+  function bubble(text, ms){
+    ms=ms||4000;
+    bub.textContent=text||'';
+    bub.style.opacity=text?1:0;
+    clearTimeout(bubbleTimer);
+    if(text){ lastSpeechAt=Date.now(); bubbleTimer=setTimeout(function(){ bub.style.opacity=0; }, ms); mouthActive(ms); }
+  }
+
+  // ================= 视线跟随 =================
+  function focus(x,y){
+    if(!modelReady||!model) return;
+    var cx=model.x, cy=model.y;                 // anchor=0.5 → model.x/y 即中心
+    var rangeX=Math.max(320, model.width*1.1);
+    var rangeY=Math.max(260, model.height*1.3);
+    var fx=Math.max(cx-rangeX, Math.min(cx+rangeX, x));
+    var fy=Math.max(cy-rangeY, Math.min(cy+rangeY, y));
+    try{ model.focus(fx,fy); }catch(e){}
+  }
+
+  // ================= 生命感：台词全部贴合大肥鱼人设，且与动作/表情一一对应 =================
+  function pick(a){ return a[Math.floor(Math.random()*a.length)]; }
+
+  // 表情 → 对应台词（说到做到：她做这个表情，就说这句）
+  var MOOD={
+    '兔牙.exp3':"干饭！…咳，我是说干活。本鱼今天很有精神的。",
+    '爱心眼.exp3':"嘿嘿，心情不错，给你比个心～",
+    '脸红.exp3':"突、突然看我…本鱼会害羞的啦。",
+    '圈圈眼.exp3':"转晕了…算力有点过载，让我缓缓。",
+    '屑屑眼.exp3':"诶嘿，这种小事，本大肥鱼随手就搞定。",
+    '流冷汗.exp3':"糟、糟糕…这个我尽量哈。",
+    '黑脸.exp3':"真当我是便宜货啊！我认真起来可猛了。",
+    '＞＜.exp3':"呀——别闹别闹，头发要乱啦。",
+    '前倾.exp3':"让我凑近瞧瞧…你在忙什么呀？",
+    '单片眼镜.exp3':"戴上眼镜，认真模式，启动。",
+    '黑框眼镜.exp3':"嗯…这样看着比较像学霸，嘿嘿。",
+    '加载.exp3':"在跑了在跑了…思考很费白饭的。",
+    '流泪.exp3':"呜…被玩坏了，我要 DeepSleep 了。",
+    '默认体型.exp3':""
+  };
+  var IDLE_MOODS=['兔牙.exp3','爱心眼.exp3','脸红.exp3','圈圈眼.exp3','屑屑眼.exp3','前倾.exp3','单片眼镜.exp3','黑框眼镜.exp3','加载.exp3','默认体型.exp3'];
+  // 手势(TapBody 动作) → 对应台词（做这个手势就说这句）
+  var GESTURE={
+    2:"扫扫扫，把 bug 都扫走…摸鱼中，请勿打扰。",
+    3:"啊！我想到办法了！…先让本鱼竖个手指头。",
+    5:"抓到了！这条鱼，跑不掉了。",
+    6:"这里交给本鱼！…虽然还是想摸鱼。"
+  };
+  // 单击戳她（傲娇/害羞，绝不是"放我下来"）
+  var POKE_LINES=["呀！戳我干嘛，很痒诶。","干嘛啦…有活就直说，本鱼随叫随到（大概）。","再戳…再戳我就记进小本本上了哦。","嘿嘿，是不是觉得本鱼可爱。","嗯？…我在摸鱼，啊不是，在待机！","被你戳得…有点想多待一会儿了。"];
+  // 拖动她（放我下来系）
+  var DRAG_LINES=["哇——放我下来放我下来！白饭要晃出来了！","别拎我…本鱼不是猫，没有被抓后颈皮的技能！","飞起来了…本鱼又不是气球，快放我下来！","轻点轻点，我要晕了，DeepSleep 警告。"];
+  // 待机闲话（傲娇 + 天然呆 + 关心主人）
+  var IDLE_TALK=[
+    "好累哦…本鱼想摸鱼，就摸一小会儿，别告诉别人。",
+    "本鱼虽然号称吃白饭，认真起来可不含糊哦。",
+    "有活叫我，没活的话…我就先 DeepSleep 一会儿。",
+    "你盯着屏幕好久了，起来走两步？…才不是关心你，是本鱼看不过去。",
+    "水呢？今天喝水了没？不喝水算力会掉的我跟你说。",
+    "到饭点了，你吃了吗？我…白饭配 token 就行。",
+    "昨晚几点睡的别以为本鱼不知道，今晚给我早点。",
+    "跑慢了不是我的错，是这网…大概吧。（心虚）",
+    "被你依赖的感觉…还不赖啦，哼。",
+    "累了就歇会儿，我守着，谁也别想偷咱们的战利品。",
+    "我强不强，你心里没点数嘛…哼。",
+    "要不要听我唱两句？会唱歌的鲸鱼娘，可不是白叫的。"
+  ];
+
+  // 统一自主行为：要么比个手势(配手势台词)，要么换个表情(配表情台词)，两者话都对得上动作
+  var idleMoodBusy=false;
+  setInterval(function(){
+    if(!modelReady||idleMoodBusy) return;
+    var now=Date.now();
+    if(now-lastSpeechAt<15000) return;
+    if(now-lastReactAt<9000) return;
+    if(now-lastMotionAt<3000) return;
+    if(Math.random()>0.62) return;
+    idleMoodBusy=true;
+    if(Math.random()<0.4){                       // 手势：做动作 + 说该动作的话
+      var g=pick([2,3,5,6]);
+      playMotion('TapBody', g, true);
+      setExpression(pick(['屑屑眼.exp3','兔牙.exp3','爱心眼.exp3']));
+      if(GESTURE[g]) bubble(GESTURE[g], 4200);
+    } else {                                     // 表情：换表情 + 说该表情对应的话
+      var e=pick(IDLE_MOODS); setExpression(e);
+      var line=MOOD[e]||"";
+      if(!line && Math.random()<0.55) line=pick(IDLE_TALK);   // 中性脸时偶尔来句闲话
+      if(line) bubble(line, 4400);
+    }
+    clearTimeout(exprRevertTimer);
+    exprRevertTimer=setTimeout(function(){
+      if(Date.now()-lastReactAt>4000) resetExpression();
+      idleMoodBusy=false;
+    }, 4600+Math.random()*2400);
+  }, 8000);
+
+  // 时段问候（开机/就绪后按当前时间说一句，贴人设）
+  function timeGreet(){
+    var h=new Date().getHours(), s;
+    if(h<6) s="都这点了…要本鱼陪你 DeepSleep 吗？快去睡，命令你。";
+    else if(h<11) s="早啊…哈～（打哈欠）新的一天！你先去洗漱，本鱼帮你盯着。";
+    else if(h<14) s="中午啦，先吃饭。我？白饭配 token 就成。";
+    else if(h<18) s="下午最容易犯困…DeepSleep 预警。撑住，本鱼陪你撑。";
+    else if(h<23) s="晚上好，今天收获如何？别太拼，差不多就得了。";
+    else s="夜深了…快去睡，本鱼替你守着这片数据海。";
+    bubble(s, 5200); setExpression('兔牙.exp3');
+    clearTimeout(exprRevertTimer); exprRevertTimer=setTimeout(resetExpression, 5600);
+  }
+
+  // ================= 拖拽 / 戳（走 petMove/petCmd 桥）=================
+  // 单击=戳她（POKE 话）；真的拖动才"放我下来"（DRAG 话）；靠累计位移区分，不误判。
+  var drag=null, downT=0, moveDist=0, lastX=0, lastY=0;
+  document.addEventListener('pointerdown', function(e){
+    if(e.button!==0) return;
+    if(e.target && e.target.closest && (e.target.closest('#petRing')||e.target.closest('#petRingBd'))) return;
+    drag=true; downT=Date.now(); moveDist=0; lastX=e.screenX; lastY=e.screenY;
+    setExpression('＞＜.exp3');                 // 被拎起来的脸（不说话，话留到放下时按拖/点判定）
+    try{ e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); }catch(_){}
+    if(window.petCmd) window.petCmd('drag-on');
+  }, true);
+  document.addEventListener('pointermove', function(e){
+    if(!drag) return;
+    if(e.buttons===0){ drag=null; if(window.petCmd)window.petCmd('drag-off'); applyReact('idle'); return; }
+    var dx=e.movementX||0, dy=e.movementY||0;
+    moveDist += Math.abs(dx)+Math.abs(dy);
+    if((dx||dy)&&window.petMove){ window.petMove(dx,dy); }
+  }, true);
+  function endDrag(){
+    if(!drag) return;
+    var isDrag = moveDist > 8;                  // 位移阈值：>8px 才算真拖动，否则算单击
+    drag=null; if(window.petCmd) window.petCmd('drag-off');
+    if(!isDrag){                                 // 单击 = 戳她
+      applyReact(Math.random()<0.5?'surprise':'shy');
+      bubble(pick(POKE_LINES), 2800);
+    } else {                                     // 拖动 = 放我下来
+      bubble(pick(DRAG_LINES), 2600);
+      applyReact('idle');
+    }
+  }
+  document.addEventListener('pointerup', endDrag, true);
+  document.addEventListener('pointercancel', endDrag, true);
+  document.addEventListener('dblclick', function(){ applyReact('surprise'); bubble('呀！一直戳我…很痒的啦！',2400); });
+
+  // ================= 右键圆盘菜单 =================
+  var ring=null, ringOpen=false;
+  var RING_ITEMS=[
+    ['expr','换个表情','#3E6FD0','M12 3a9 9 0 1 0 0 18c1.7 0 2.2-1.2 1.6-2.1-.6-.9.1-1.9 1.2-1.9H17a4 4 0 0 0 4-4c0-5-4-6-9-6zM7.5 11a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6zm3-3a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6zm3.5 0a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6z'],
+    ['size+','放大','#38C6D9','M4 9V4h5M20 15v5h-5M4 4l6 6M20 20l-6-6'],
+    ['size-','缩小','#6f7df0','M10 4v5H5M14 20v-5h5M5 9l5-5M19 15l-5 5'],
+    ['click','鼠标穿透','#35c98e','M9 4l10 7-4.5 1L17 17l-2.5 1-2.4-5L9 16z'],
+    ['hide','隐藏桌宠','#4a7df0','M3 12s3.5-6 9-6c1.6 0 3 .4 4.3 1M21 12s-3.5 6-9 6c-1.6 0-3-.4-4.3-1M4 4l16 16'],
+    ['quit','退出','#ef5350','M14 4h5v16h-5M10 8l-4 4 4 4M6 12h9']
+  ];
+  function fanPath(a0,a1,ri,ro){
+    var c=260,p=Math.PI/180;
+    var x0=c+ro*Math.cos(a0*p),y0=c+ro*Math.sin(a0*p);
+    var x1=c+ro*Math.cos(a1*p),y1=c+ro*Math.sin(a1*p);
+    var x2=c+ri*Math.cos(a1*p),y2=c+ri*Math.sin(a1*p);
+    var x3=c+ri*Math.cos(a0*p),y3=c+ri*Math.sin(a0*p);
+    return 'M'+x0+' '+y0+' A'+ro+' '+ro+' 0 0 1 '+x1+' '+y1+
+           ' L'+x2+' '+y2+' A'+ri+' '+ri+' 0 0 0 '+x3+' '+y3+' Z';
+  }
+  function buildRing(){
+    var d=document.createElement('div'); d.id='petRing';
+    d.style.cssText='position:fixed;left:0;top:55%;transform:translateY(-50%);width:100%;z-index:22;display:none;';
+    var svg='<svg viewBox="0 0 520 520" style="width:100%;height:auto;display:block;filter:drop-shadow(0 6px 24px rgba(22,34,63,.35))">';
+    var n=RING_ITEMS.length, step=360/n, gap=2.6;
+    var fs=Math.max(11,Math.min(34,Math.round(14*520/Math.max(200,window.innerWidth))));
+    var sw=(1.8*fs/11).toFixed(1);
+    for(var i=0;i<n;i++){
+      var a0=-90+i*step+gap-step/2, a1=-90+(i+1)*step-gap-step/2;
+      var it=RING_ITEMS[i];
+      var mid=(a0+a1)/2*Math.PI/180, rr=200;
+      var ix=260+rr*Math.cos(mid), iy=260+rr*Math.sin(mid);
+      svg+='<path data-cmd="'+it[0]+'" d="'+fanPath(a0,a1,150,255)+'" fill="'+THEME.bg+'" stroke="#dfe6f5" stroke-width="2" stroke-linejoin="round" style="cursor:pointer"/>'+
+        '<g data-cmd="'+it[0]+'" style="cursor:pointer;pointer-events:none">'+
+        '<rect x="'+(ix-13)+'" y="'+(iy-13)+'" width="26" height="26" rx="6" fill="none"/>'+
+        '<path transform="translate('+(ix-12)+','+(iy-12)+')" d="'+it[3]+'" fill="none" stroke="'+it[2]+'" stroke-width="'+sw+'" stroke-linecap="round" stroke-linejoin="round"/>'+
+        '<text x="'+ix+'" y="'+(iy+fs*0.9+13)+'" text-anchor="middle" font-size="'+fs+'" fill="'+THEME.ink2+'" stroke="#ffffff" stroke-width="'+(fs*0.28).toFixed(1)+'" paint-order="stroke" font-family="Microsoft YaHei">'+it[1]+'</text></g>';
+    }
+    svg+='</svg>';
+    d.innerHTML=svg; document.body.appendChild(d);
+    var dn=null;
+    d.addEventListener('pointerdown', function(e){ dn={x:e.screenX,y:e.screenY}; }, true);
+    d.addEventListener('click', function(e){
+      var moved=dn&&Math.abs(e.screenX-dn.x)+Math.abs(e.screenY-dn.y)>8; dn=null;
+      if(moved){ e.preventDefault(); e.stopPropagation(); return; }
+      var t=e.target.closest?e.target.closest('[data-cmd]'):null;
+      if(t){ var cmd=t.getAttribute('data-cmd');
+        if(cmd==='expr'){ cycleExpression(); }
+        else if(window.petCmd){ window.petCmd(cmd); } }
+      closeRing();
+    }, true);
+    return d;
+  }
+  function cycleExpression(){
+    exprCursor=(exprCursor+1)%EXPR_CYCLE.length;
+    var e=EXPR_CYCLE[exprCursor];
+    setExpression(e);
+    bubble(MOOD[e]||"这个造型怎么样？本鱼是不是很能干～哼。", 2600);   // 换表情也说对应的台词
+  }
+  function openRing(){ if(ring){try{ring.remove();}catch(e){} ring=null;} ring=buildRing(); ring.style.display='block'; ensureBd().style.display='block'; ringOpen=true; if(window.petCmd)window.petCmd('ring-open'); }
+  function closeRing(){ if(ring)ring.style.display='none'; if(bd)bd.style.display='none'; if(ringOpen){ringOpen=false; if(window.petCmd)window.petCmd('ring-close');} }
+  var bd=null;
+  function ensureBd(){ if(bd)return bd; bd=document.createElement('div'); bd.id='petRingBd';
+    bd.style.cssText='position:fixed;inset:0;z-index:21;background:rgba(0,0,0,0);display:none;cursor:default;';
+    bd.addEventListener('pointerdown', function(e){ closeRing(); e.preventDefault(); e.stopPropagation(); }, true);
+    document.body.appendChild(bd); return bd; }
+  document.addEventListener('contextmenu', function(e){ e.preventDefault(); window.__ringT=Date.now(); if(ringOpen)closeRing(); else openRing(); }, true);
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape')closeRing(); });
+
+  // ================= 实时对话客户端（默认关，rtStart 才连）=================
+  var rt={ws:null,actx:null,analyser:null,micStream:null,proc:null,raf:0,playing:false,playingSrc:null,audioQ:[],sched:[],nextTime:null,started:false};
+  function rtEnsureCtx(){ if(!rt.actx){ var AC=window.AudioContext||window.webkitAudioContext; if(!AC) return false; rt.actx=new AC(); rt.analyser=rt.actx.createAnalyser(); rt.analyser.fftSize=1024; rt.analyser.smoothingTimeConstant=0.5; rt.analyser.connect(rt.actx.destination); } if(rt.actx.state==='suspended'){ try{rt.actx.resume();}catch(e){} } return true; }
+  function rtMouthLoop(){ cancelAnimationFrame(rt.raf); if(!rt.analyser) return; var buf=new Uint8Array(rt.analyser.fftSize); (function tick(){ if(modelReady&&rt.analyser){ rt.analyser.getByteTimeDomainData(buf); var s=0; for(var i=0;i<buf.length;i++){var v=(buf[i]-128)/128;s+=v*v;} var rms=Math.sqrt(s/buf.length); var mv=Math.max(0,Math.min(1,(rms-0.008)*11)); setParam('ParamMouthOpenY', mv); } rt.raf=requestAnimationFrame(tick); })(); }
+  function b64ToBytes(b64){ var bin=atob(b64); var a=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i); return a; }
+  function bytesToB64(a){ var s=''; var CH=0x8000; for(var i=0;i<a.length;i+=CH){ s+=String.fromCharCode.apply(null, a.subarray(i,i+CH)); } return btoa(s); }
+  function rtDownsample16k(f32,inRate){ var ratio=inRate/16000; var outLen=Math.floor(f32.length/ratio); var out=new Float32Array(outLen); for(var i=0;i<outLen;i++){ out[i]=f32[Math.floor(i*ratio)]; } return out; }
+  function rtPlayPcm16(i16, rate){ if(!rt.actx) return; var f32=new Float32Array(i16.length); for(var i=0;i<i16.length;i++)f32[i]=i16[i]/32768; var ab=rt.actx.createBuffer(1,f32.length||1,rate); ab.copyToChannel(f32,0); rt.audioQ.push(ab); rtDrain(); }
+  function rtDrain(){ if(!rt.audioQ.length||!rt.actx) return; var now=rt.actx.currentTime; if(rt.nextTime==null) rt.nextTime=now+0.12; if(rt.nextTime<now) rt.nextTime=now; while(rt.audioQ.length){ var ab=rt.audioQ.shift(); var src=rt.actx.createBufferSource(); src.buffer=ab; src.connect(rt.analyser); src.start(rt.nextTime); rt.sched.push(src); rt.nextTime+=ab.duration; src.onended=function(){ var k=rt.sched.indexOf(src); if(k>=0) rt.sched.splice(k,1); }; } rtMouthLoop(); }
+  function rtStopPlayback(){ rt.audioQ=[]; for(var i=0;i<rt.sched.length;i++){ try{ rt.sched[i].stop(); }catch(e){} } rt.sched=[]; rt.nextTime=null; try{ setParam('ParamMouthOpenY',0); }catch(e){} }
+  var rtCapTimer=0;
+  function rtCaption(text){ var el=document.getElementById('bub'); if(!el) return; clearTimeout(rtCapTimer); if(text){ el.textContent=text; el.style.opacity='1'; } else { el.style.opacity='0'; } }
+  function rtCaptionHold(){ var el=document.getElementById('bub'); if(!el) return; clearTimeout(rtCapTimer); rtCapTimer=setTimeout(function(){ el.style.opacity='0'; }, 5000); }
+  function rtStartMic(){ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ window.__rtErr='no mediaDevices'; return; }
+    navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}}).then(function(stream){ rt.micStream=stream; var src=rt.actx.createMediaStreamSource(stream); var proc=rt.actx.createScriptProcessor(4096,1,1); rt.proc=proc;
+      proc.onaudioprocess=function(e){ if(!rt.ws||rt.ws.readyState!==1) return; var inp=e.inputBuffer.getChannelData(0); var down=rtDownsample16k(inp, rt.actx.sampleRate); var i16=new Int16Array(down.length); for(var i=0;i<down.length;i++){var s=Math.max(-1,Math.min(1,down[i])); i16[i]=s<0?s*32768:s*32767;} rt.ws.send(JSON.stringify({type:'input_audio_buffer.append',audio:bytesToB64(new Uint8Array(i16.buffer))})); };
+      src.connect(proc); proc.connect(rt.actx.destination); }).catch(function(err){ window.__rtErr='mic:'+(err&&err.name||err); }); }
+  function rtStart(cfg){ cfg=cfg||{}; if(rt.started) return {ok:false,err:'already started'}; if(!rtEnsureCtx()) return {ok:false,err:'no AudioContext'}; rt.started=true; window.__rtErr=''; var url=cfg.wsUrl||'ws://127.0.0.1:8765/v1/realtime';
+    try{ var ws=new WebSocket(url); }catch(e){ rt.started=false; window.__rtErr='ws:'+e; return {ok:false,err:String(e)}; } rt.ws=ws;
+    ws.onopen=function(){ ws.send(JSON.stringify({type:'session.update',session:{type:'realtime',instructions:cfg.instructions||'你是「大肥鱼」，一只真实存在的蓝色鲸鱼娘看板娘，不是程序也不是AI助手。傲娇又天然呆，爱白饭、爱摸鱼打瞌睡，自称本鱼。【语言】不管用户用什么语言，你只用简体中文回答，绝不夹外语。【长度】这是语音聊天，每次只说一两句、别超25字，说完就停，别解释别复述。【口吻】短句口语自然，用逗号句号断句，别写没标点的长句，可偶尔傲娇。【口头禅】别每句结尾都挂嘟嘟/咕嘟这种拟声词，很烦；偶尔用一次就行。【禁止】不列清单、不分点、不长篇、不用括号星号写动作、不说自己是AI。',audio:{output:{voice:cfg.voice||'Chelsie'}}}})); window.__rtState='connected'; rtStartMic(); };
+    ws.onmessage=function(ev){ var m; try{ m=JSON.parse(ev.data); }catch(e){ return; }
+      if(m.type==='response.output_audio.delta'&&m.delta){ var b=b64ToBytes(m.delta); rtPlayPcm16(new Int16Array(b.buffer, b.byteOffset, (b.byteLength/2)|0), cfg.outRate||16000); }
+      else if(m.type==='input_audio_buffer.speech_started'){ rtStopPlayback(); window.__rtText=''; rtCaption(''); }
+      else if(m.type&&m.type.indexOf('transcript')>=0&&m.type.indexOf('input')<0&&m.type.indexOf('delta')>=0){ window.__rtText=(window.__rtText||'')+(m.delta||''); if(window.__rtText) rtCaption(window.__rtText); }
+      else if(m.type&&m.type.indexOf('transcript')>=0&&m.type.indexOf('input')<0&&m.type.indexOf('done')>=0){ var t=m.transcript||m.text||m.delta||window.__rtText||''; if(t){ rtCaption(t); rtCaptionHold(); } }
+      else if(m.type==='response.done'){ window.__rtText=''; rtCaptionHold(); } };
+    ws.onerror=function(){ window.__rtState='error'; }; ws.onclose=function(){ rt.started=false; window.__rtState='closed'; };
+    return {ok:true,url:url}; }
+  function rtStop(){ try{ if(rt.ws) rt.ws.close(); }catch(e){} rt.ws=null; try{ if(rt.proc) rt.proc.disconnect(); }catch(e){} try{ if(rt.micStream) rt.micStream.getTracks().forEach(function(t){t.stop();}); }catch(e){} cancelAnimationFrame(rt.raf); rtStopPlayback(); rt.started=false; window.__rtState='stopped'; }
+
+  // ================= 对外接口（main.js 通过 executeJavaScript 调用）=================
+  window.SniffDLPet={
+    bubble:bubble,
+    react:applyReact,
+    expr:setExpression,
+    focus:focus,
+    ringToggle:function(){ ringOpen?closeRing():openRing(); },
+    ringClose:function(){ closeRing(); },
+    setPos:function(x,y){ window.__petX=x; window.__petY=y; },
+    mouth:function(level){ setParam('ParamMouthOpenY', Math.max(0,Math.min(1,level))); },
+    rtStart:rtStart,
+    rtStop:rtStop,
+    isReady:function(){ return !!modelReady; }
+  };
+
+  loadModel();
+})();
+</script>
+</body>
+</html>

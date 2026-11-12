@@ -1,0 +1,5 @@
+-r requirements-trial.txt
+playwright
+psutil
+pyautogui
+websocket-client

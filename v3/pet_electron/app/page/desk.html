@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>大肥鱼 · SniffDL 桌宠</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#24304a}
+#stage{position:fixed;inset:0;touch-action:none;background:
+ radial-gradient(1200px 600px at 20% 10%,#e6f0ff 0,transparent 60%),
+ radial-gradient(900px 600px at 90% 80%,#efe6ff 0,transparent 60%),
+ linear-gradient(160deg,#dfeaff,#e9e3ff);overflow:hidden}
+#taskbar{position:absolute;left:0;right:0;bottom:0;height:44px;background:rgba(255,255,255,.72);backdrop-filter:blur(10px);border-top:1px solid rgba(80,100,160,.15);display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:13px;z-index:5}
+#taskbar .tray{display:flex;gap:8px;align-items:center}
+#taskbar .dot{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,#3b5bdb,#5c7cfa);display:grid;place-items:center;color:#fff;font-size:12px}
+#win{position:absolute;left:18%;top:54%;width:64%;max-width:520px;height:22%;min-height:150px;background:#fff;border-radius:12px;box-shadow:0 12px 40px rgba(40,60,120,.18);z-index:2;overflow:hidden}
+#win .bar{height:32px;background:#f3f5fb;border-bottom:1px solid #e6e9f2;display:flex;align-items:center;padding:0 10px;font-size:12px;color:#5a6785;cursor:grab;touch-action:none}
+#win .bar i{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}
+#win .body{padding:12px 14px;font-size:13px;line-height:1.7;color:#6a7690}
+#hud{position:absolute;left:10px;top:calc(10px + env(safe-area-inset-top));z-index:6;background:rgba(255,255,255,.75);backdrop-filter:blur(8px);border-radius:12px;padding:8px 10px;font-size:12px;min-width:150px;box-shadow:0 4px 14px rgba(40,60,120,.1)}
+#hud .row{display:flex;align-items:center;gap:6px}
+#mood{flex:1;height:7px;border-radius:4px;background:#e4e8f3;overflow:hidden}
+#mood b{display:block;height:100%;width:60%;background:linear-gradient(90deg,#ff8fb1,#ff5d8f);transition:width .5s}
+#state{margin-top:4px;color:#7a86a3}
+#help-btn{position:absolute;right:10px;top:calc(10px + env(safe-area-inset-top));z-index:6;width:34px;height:34px;border-radius:50%;border:0;background:rgba(255,255,255,.8);font-size:16px;box-shadow:0 4px 14px rgba(40,60,120,.12)}
+#fabs{position:absolute;left:10px;right:52px;max-height:96px;overflow:auto;top:calc(62px + env(safe-area-inset-top));z-index:6;display:flex;flex-wrap:wrap;gap:6px}
+#fabs button{border:0;border-radius:18px;padding:6px 10px;font-size:12px;background:rgba(255,255,255,.88);box-shadow:0 4px 14px rgba(40,60,120,.14);color:#24304a}
+#fabs button.on{background:#3b5bdb;color:#fff}
+#pet{position:absolute;left:0;top:0;z-index:4;will-change:transform;touch-action:none;cursor:grab;transform-origin:50% 100%}
+#pet canvas{display:block;pointer-events:none}
+#pet .flip{transform-origin:50% 100%}
+#pet .fx{transform-origin:50% 100%}
+#pet img{display:block;pointer-events:none;-webkit-user-drag:none}
+#pet.dragging{cursor:grabbing}
+#shadow{position:absolute;z-index:3;height:10px;border-radius:50%;background:rgba(30,40,90,.18);filter:blur(2px);pointer-events:none}
+#bubble{position:absolute;z-index:7;max-width:200px;background:#fff;border-radius:14px;padding:7px 11px;font-size:13px;line-height:1.45;box-shadow:0 6px 18px rgba(40,60,120,.18);pointer-events:none;transform-origin:50% 100%;opacity:0;transform:scale(.6);transition:opacity .18s,transform .35s cubic-bezier(.34,1.56,.64,1)}
+#bubble.show{opacity:1;transform:scale(1)}
+#bubble:after{content:"";position:absolute;left:50%;bottom:-6px;margin-left:-6px;border:6px solid transparent;border-top-color:#fff;border-bottom:0}
+.pt{position:absolute;z-index:8;pointer-events:none;font-size:18px;animation:up 1.2s ease-out forwards}
+@keyframes up{0%{opacity:0;transform:translate(0,0) scale(.5)}15%{opacity:1;transform:translate(var(--dx),-10px) scale(1)}100%{opacity:0;transform:translate(calc(var(--dx)*2),-70px) scale(.9)}}
+#bowl{position:absolute;z-index:6;font-size:40px;display:none;touch-action:none;filter:drop-shadow(0 4px 6px rgba(0,0,0,.15));cursor:grab}
+#ring{position:absolute;z-index:7;display:none;pointer-events:none}
+#menu{position:absolute;z-index:9;display:none;background:#fff;border-radius:12px;box-shadow:0 10px 30px rgba(40,60,120,.22);padding:6px;min-width:130px}
+#menu div{padding:9px 12px;border-radius:8px;font-size:14px}
+#menu div:active,#menu div:hover{background:#eef2ff}
+#sheet{position:absolute;inset:0;z-index:10;display:none;background:rgba(20,30,60,.35);align-items:flex-end;justify-content:center}
+#sheet .card{background:#fff;width:100%;max-width:520px;border-radius:18px 18px 0 0;padding:16px 18px calc(18px + env(safe-area-inset-bottom));font-size:14px;line-height:1.75;max-height:80%;overflow:auto}
+#sheet h3{margin:0 0 6px;font-size:16px}
+#sheet small{color:#8a94ad}
+#dring{position:absolute;z-index:7;display:none;pointer-events:none;text-align:center}
+#dring svg{display:block;margin:0 auto}
+#dspeed{font-size:10px;color:#3b4a6b;background:rgba(255,255,255,.85);border-radius:8px;padding:1px 6px;margin-top:2px;white-space:pre;line-height:1.35;display:inline-block;text-align:left}
+#badge{position:absolute;right:-4px;top:-4px;background:#ff5d8f;color:#fff;border-radius:9px;font-size:10px;min-width:17px;height:17px;line-height:17px;display:none}
+#toasts{position:absolute;left:50%;transform:translateX(-50%);top:118px;width:max-content;align-items:center;z-index:8;display:flex;flex-direction:column;gap:6px;max-width:68%}
+.toast{background:#fff;border-radius:12px;padding:8px 10px;font-size:12px;box-shadow:0 6px 18px rgba(40,60,120,.18);animation:tin .35s cubic-bezier(.34,1.56,.64,1)}
+.toast b{display:block;font-size:12.5px;margin-bottom:2px;word-break:break-all}
+.toast button{border:0;border-radius:10px;padding:4px 9px;font-size:12px;margin-top:5px;margin-right:6px;background:#eef2ff;color:#3b5bdb}
+@keyframes tin{from{opacity:0;transform:translateY(10px) scale(.9)}to{opacity:1;transform:none}}
+#chips{position:absolute;z-index:8;display:none;gap:6px}
+#chips button{border:0;border-radius:14px;padding:6px 12px;font-size:13px;background:#3b5bdb;color:#fff;box-shadow:0 4px 12px rgba(40,60,120,.2)}
+#chips button.ghost{background:#fff;color:#3b4a6b}
+#link{position:absolute;z-index:6;display:none;touch-action:none;background:#fff;border-radius:14px;padding:6px 10px;font-size:12px;color:#3b5bdb;box-shadow:0 4px 12px rgba(40,60,120,.2);cursor:grab;white-space:nowrap}
+#cmd{position:absolute;z-index:11;display:none;width:min(300px,86vw)}#cmd .box{box-shadow:0 8px 24px rgba(30,40,90,.18)}
+#cmd .box{background:#fff;border-radius:14px;padding:12px;width:84%;max-width:360px}
+#cmd input{width:100%;border:1px solid #d6dcef;border-radius:10px;padding:9px 10px;font-size:15px;outline:none;user-select:text;-webkit-user-select:text}
+#cmd small{display:block;color:#8a94ad;margin-top:6px;font-size:12px}
+#loading{position:absolute;inset:0;display:grid;place-items:center;z-index:20;background:#e4ecff;font-size:15px;color:#5a6785}
+
+#cup{position:absolute;z-index:6;font-size:34px;display:none;touch-action:none;filter:drop-shadow(0 4px 6px rgba(0,0,0,.15));cursor:grab}
+#book{position:absolute;inset:0;z-index:10;display:none;background:rgba(20,30,60,.35);align-items:flex-end;justify-content:center}
+#book .card{background:#fffdf8;width:100%;max-width:520px;border-radius:18px 18px 0 0;padding:16px 18px calc(18px + env(safe-area-inset-bottom));font-size:14px;line-height:1.7;max-height:82%;overflow:auto}
+#book h3{margin:0 0 4px;font-size:17px}
+#book .sec{margin-top:10px;padding:10px 12px;border-radius:12px;background:#f4f6fd}
+#book .sec b{color:#3b5bdb}
+#book .cups span{display:inline-block;width:18px;height:22px;margin-right:3px;border-radius:0 0 5px 5px;border:2px solid #8fb3ff;border-top:0;vertical-align:middle}
+#book .cups span.f{background:linear-gradient(#cfe0ff,#8fb3ff)}
+#book .ach{display:inline-block;margin:3px 4px 0 0;padding:2px 8px;border-radius:10px;background:#fff3c4;font-size:12px}
+#book .ach.off{background:#eceef4;color:#a3abc0}
+#book .bar2{height:8px;border-radius:4px;background:#e4e8f3;overflow:hidden;margin-top:4px}
+#book .bar2 i{display:block;height:100%;background:linear-gradient(90deg,#8fb3ff,#3b5bdb)}
+#poof{position:absolute;z-index:8;pointer-events:none;font-size:26px}
+.shake{animation:shk .35s}
+@keyframes shk{0%,100%{transform:translate(0,0)}20%{transform:translate(-6px,2px)}40%{transform:translate(5px,-3px)}60%{transform:translate(-4px,3px)}80%{transform:translate(3px,-2px)}}
+#chips{flex-wrap:wrap;justify-content:center;max-width:300px}
+#chips button{margin:2px 0}
+</style>
+
+<style id="desk">
+/* 桌面版：透明全屏层，只画她本人 */
+html,body{background:transparent!important}
+#stage{background:transparent!important}
+#taskbar,#win,#hud,#fabs,#help-btn,#loading{display:none!important}
+#menu div[data-a=hide],#menu div[data-a=quit]{color:#5a6785}
+#menu div[data-a=quit]{border-top:1px solid #eef0f6;margin-top:2px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="win"><div class="bar"><i style="background:#ff6b6b"></i><i style="background:#ffd43b"></i><i style="background:#51cf66"></i>&nbsp;记事本 — 拖这里移动窗口</div>
+    <div class="body">今天的待办：<br>· 写代码<br>· 按时吃饭、多喝水<br>· 摸摸大肥鱼</div></div>
+  <div id="shadow"></div>
+  <div id="pet"></div>
+  <div id="bubble"></div>
+  <div id="bowl">🍚</div>
+  <div id="cup">🥛</div>
+  <div id="link">🔗 bilibili.com/video/BV1xx…</div>
+  <div id="dring"><div style="position:relative;display:inline-block"><svg width="44" height="44"><circle cx="22" cy="22" r="18" fill="#fff" stroke="#e4e8f3" stroke-width="5"/><circle id="dringc" cx="22" cy="22" r="18" fill="none" stroke="#3b5bdb" stroke-width="5" stroke-linecap="round" transform="rotate(-90 22 22)" stroke-dasharray="113.1" stroke-dashoffset="113.1"/><text id="dringt" x="22" y="26" text-anchor="middle" font-size="11" fill="#24304a"></text></svg><span id="badge"></span></div><div id="dspeed"></div></div>
+  <div id="chips"></div>
+  <div id="toasts"></div>
+  <svg id="ring" width="46" height="46"><circle cx="23" cy="23" r="19" fill="#fff" stroke="#e4e8f3" stroke-width="5"/><circle id="ringc" cx="23" cy="23" r="19" fill="none" stroke="#ff6b6b" stroke-width="5" stroke-linecap="round" transform="rotate(-90 23 23)" stroke-dasharray="119.4" stroke-dashoffset="0"/><text id="ringt" x="23" y="27" text-anchor="middle" font-size="11" fill="#24304a"></text></svg>
+  <div id="hud"><div class="row">💗<div id="mood"><b></b></div></div><div id="state">状态：登场中</div></div>
+  <button id="help-btn">?</button>
+  <div id="fabs">
+    <button id="b-size">🔄 正常版</button>
+    <button id="b-book">📒 小本本</button>
+    <button id="b-feed">🍚 喂饭</button>
+    <button id="b-water">🥛 我喝水了</button>
+    <button id="b-pomo">🍅 番茄钟</button>
+    <button id="b-quiet">🔇 安静</button>
+    <button id="b-fast" class="on">⏩ 加速预览</button>
+    <button id="b-care">🕐 日常演示</button>
+    <button id="b-clip">📋 模拟复制链接</button>
+    <button id="b-link">🔗 拖链接给她</button>
+    <button id="b-fail">⚠️ 失败演示</button>
+  </div>
+  <div id="taskbar"><div class="tray"><span class="dot">鱼</span><span>大肥鱼</span></div><span id="clock"></span></div>
+  <div id="menu">
+    <div data-a="pat">摸摸头</div><div data-a="feed">喂饭</div><div data-a="water">一起喝水</div><div data-a="size">切换 Q版 / 正常版</div><div data-a="dress">换装</div><div data-a="book">看小本本</div><div data-a="pause">暂停/继续下载</div><div data-a="cmd">跟她说话</div><div data-a="sleep">哄她睡觉</div><div data-a="quiet">安静模式</div>
+  </div>
+  <div id="sheet"><div class="card" id="helpcard"></div></div>
+  <div id="book"><div class="card" id="bookcard"></div></div>
+  <div id="cmd"><div class="box"><input id="cmdin" placeholder="想跟她说什么？" enterkeyhint="send"><small>试试：我吃了米饭 · 喝水了 · 我好累 · 讲个笑话 · 晚安 · 贴链接</small></div></div>
+  <div id="loading">大肥鱼 正在游过来…</div>
+</div>
+<!--LIBS-->
+<script src="lib/cubismcore.js"></script>
+<script src="lib/pixi.min.js"></script>
+<script src="lib/cubism4p.min.js"></script>
+<!--/LIBS-->
+<!--ASSETS-->
+<script src="js/l2d.js"></script>
+<script src="js/lines.js"></script>
+<script>window.__DFY_MODEL__="sniffpet://app/model/desktop.model3.json";</script>
+<script src="js/main.js"></script>
+<script src="desk.js"></script>
+</body>
+</html>

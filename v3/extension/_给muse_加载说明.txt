@@ -1,0 +1,10 @@
+给 muse 的加载说明
+==================
+1) 下载器主程序：解压后双击 SniffDL\SniffDL.exe（onedir，勿只拷 exe）。
+   RPC 端口 6800 / 无 token。config.json 的 ui_bg=bg1（深色沉浸壁纸）为待确认项。
+2) Chrome 扩展：打开 chrome://extensions → 右上角开“开发者模式” →
+   “加载已解压的扩展程序” → 选择本包里的 SniffDL\extension\ 目录（版本 0.6.0）。
+   改过扩展需在此页点刷新按钮重载。
+3) 桌宠：随主程序自动拉起（唯一一只 Live2D 大肥鱼，Electron）。
+   已去掉 _internal\live2d 死重（62M）与非中英语言包；桌宠实际读 pet_electron\live2d，功能不受影响。
+4) 待主人确认：① exe 里深色沉浸壁纸是否真出来；② 开浏览器是否还往 Videos\SniffDL 灌非视频文件。
