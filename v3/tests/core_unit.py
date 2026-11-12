@@ -238,9 +238,57 @@ def t_bt_exclude():
     check("路径通配按种子内相对路径匹配（去掉保存目录前缀）", chg and chg[0][1][1]["select-file"] == "1", o.calls)
 
 
+def t_kill_aria2c_under():
+    """video_downloader.kill_aria2c_under：只杀命令行带该临时目录的 aria2c（yt-dlp 外部下载器），别的不碰。"""
+    import tempfile
+    sys.path.insert(0, os.path.join(HERE, "tests"))
+    import ui_smoke_core
+    ui_smoke_core._stub_tk()
+    import video_downloader as V
+    d = tempfile.mkdtemp(prefix="sdl_k_")
+    fake = os.path.join(d, "aria2c")
+    os.symlink(sys.executable, fake)               # 进程名叫 aria2c 的 python（命令行带 --dir）
+    tmp_a, tmp_b = os.path.join(d, ".snifftmp", "aaa"), os.path.join(d, ".snifftmp", "bbb")
+    pa = subprocess.Popen([fake, "-c", "import time;time.sleep(300)", "--dir", tmp_a + "/"])
+    pb = subprocess.Popen([fake, "-c", "import time;time.sleep(300)", "--dir", tmp_b + "/"])
+    time.sleep(0.5)
+    n = V.kill_aria2c_under(tmp_a)
+    try:
+        pa.wait(5)
+    except Exception:
+        pass
+    check("kill_aria2c_under：杀掉带该目录的 aria2c，返回 1", n == 1 and pa.poll() is not None, (n, pa.poll()))
+    check("kill_aria2c_under：别的目录的 aria2c 不受影响", pb.poll() is None, pb.poll())
+    check("kill_aria2c_under：目录没有对应进程返回 0", V.kill_aria2c_under(os.path.join(d, "nonexist")) == 0)
+    pb.kill()
+    pb.wait()
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def t_bucket_refund():
+    """令牌桶：被取消打断的 consume 退还没睡完的透支，否则分片线程被取消后欠的债由后来的任务偿还。"""
+    from core import ratelimit as RL
+    b = RL.TokenBucket(1000)
+    stop = threading.Event()
+    ths = [threading.Thread(target=lambda: b.consume(200000, cancel=stop.is_set), daemon=True) for _ in range(8)]
+    for th in ths:
+        th.start()
+    time.sleep(0.4)
+    stop.set()
+    for th in ths:
+        th.join(3)
+    check("令牌桶：取消后分片线程全部退出", not any(th.is_alive() for th in ths))
+    t0 = time.time()
+    b.consume(500)
+    el = time.time() - t0
+    check("令牌桶：被取消线程的透支已退还，新消费 500B@1000B/s 在 2s 内返回（实 %.2fs）" % el, el < 2.0, el)
+
+
 def main():
     t_platform_util()
     t_bt_exclude()
+    t_kill_aria2c_under()
+    t_bucket_refund()
 
     shutil.rmtree(DATA, ignore_errors=True)
     os.makedirs(os.path.join(DATA, "out"), exist_ok=True)

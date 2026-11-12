@@ -80,6 +80,18 @@ function loadSettingsIntoForm(data) {
   $("token").value = data.token || "";
   $("minSizeMB").value = data.minSizeMB || 0;
   $("onlyExtensions").value = data.onlyExtensions || "";
+  // A16 高级
+  if ($("takeoverExts")) {
+    $("takeoverExts").value = data.takeoverExts == null ? "" : data.takeoverExts;
+    $("siteWhitelist").value = (data.siteWhitelist || "").split(/[\s,，;；]+/).filter(Boolean).join("\n");
+    $("siteBlacklist").value = (data.siteBlacklist || "").split(/[\s,，;；]+/).filter(Boolean).join("\n");
+    $("headerJudge").checked = data.headerJudge !== false;
+    countExts();
+  }
+}
+function countExts() {
+  const n = new Set(($("takeoverExts").value || "").toLowerCase().split(/[\s,，;；、]+/).filter(Boolean)).size;
+  $("extCount").textContent = n ? "（" + n + " 种）" : "（空：只按内核设置）";
 }
 
 function refreshPing() {
@@ -138,6 +150,88 @@ function refreshRecent() {
   });
 }
 
+// ---------- 本页嗅探列表（webRequest 嗅探，后台 sniff_list / sniff_push / sniff_clear）----------
+const SNIFF_GROUPS = [["video", "视频"], ["audio", "音频"], ["m3u8", "流媒体 · m3u8"], ["mpd", "流媒体 · mpd"]];
+let sniffTabId = null;
+
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n <= 0) return "未知大小";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n.toFixed(0) : n.toFixed(n >= 100 ? 0 : 1)) + " " + u[i];
+}
+
+function sniffName(url) {
+  try {
+    const p = new URL(url).pathname.split("/").filter(Boolean).pop() || new URL(url).hostname;
+    return decodeURIComponent(p);
+  } catch (e) { return url; }
+}
+
+function renderPageSniff(items) {
+  const box = $("pageSniff");
+  if (!box) return;
+  if (!items || !items.length) {
+    box.innerHTML = '<div class="empty">本页还没有视频/音频请求；播放一下就会出现</div>';
+    return;
+  }
+  let html = "";
+  for (const [k, label] of SNIFF_GROUPS) {
+    const g = items.filter((x) => x.kind === k);
+    if (!g.length) continue;
+    html += `<div class="grp" data-kind="${k}">${label}<span class="n">${g.length}</span></div>`;
+    html += g.map((x) => `<div class="row" data-url="${esc(x.url)}"><span class="nm" title="${esc(x.url)}">${esc(sniffName(x.url))}</span>` +
+      `<span class="sz">${fmtBytes(x.size)}</span><button class="pushOne">下载</button></div>`).join("");
+  }
+  box.innerHTML = html;
+  box.querySelectorAll(".row").forEach((row) => {
+    row.querySelector(".pushOne").addEventListener("click", (ev) => pushSniff(row.getAttribute("data-url"), ev.target));
+  });
+}
+
+function pushSniff(url, btn) {
+  return new Promise((resolve) => {
+    if (btn) { btn.disabled = true; btn.textContent = "推送中…"; }
+    chrome.runtime.sendMessage({ type: "sniff_push", tabId: sniffTabId, url }, (resp) => {
+      const ok = !!(resp && resp.ok);
+      if (btn) { btn.textContent = ok ? "已推送 ✓" : "重试"; btn.disabled = ok; }
+      const m = $("sniffMsg");
+      if (m) { m.textContent = ok ? "已交给 SniffDL（带本页 Cookie / Referer）" : ("推送失败：" + ((resp && resp.error) || "")); m.className = "statusMsg" + (ok ? "" : " bad"); }
+      resolve(ok);
+    });
+  });
+}
+
+function refreshPageSniff() {
+  if (sniffTabId == null) return;
+  chrome.runtime.sendMessage({ type: "sniff_list", tabId: sniffTabId }, (resp) => {
+    renderPageSniff(resp && resp.ok ? resp.items : []);
+  });
+}
+
+function initPageSniff() {
+  if (!$("pageSniff")) return;
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const t = (tabs && tabs[0]) || null;
+    const q = new URLSearchParams(location.search).get("tab");   // 测试/嵌入：popup.html?tab=<id> 指定标签
+    sniffTabId = q ? parseInt(q, 10) : (t ? t.id : null);
+    refreshPageSniff();
+    setInterval(refreshPageSniff, 2000);
+  });
+  $("clearPageSniff").addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "sniff_clear", tabId: sniffTabId }, () => refreshPageSniff());
+  });
+  $("pushAllSniff").addEventListener("click", async () => {
+    const btns = Array.from(document.querySelectorAll("#pageSniff .row")).filter((r) => !r.querySelector("button").disabled);
+    let n = 0;
+    for (const r of btns) { if (await pushSniff(r.getAttribute("data-url"), r.querySelector("button"))) n++; }
+    const m = $("sniffMsg");
+    if (m && btns.length) { m.textContent = "已推送 " + n + "/" + btns.length + " 条给 SniffDL"; m.className = "statusMsg"; }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   chrome.runtime.sendMessage({ type: "load" }, (resp) => {
     if (resp && resp.ok) loadSettingsIntoForm(resp.data);
@@ -145,6 +239,7 @@ document.addEventListener("DOMContentLoaded", () => {
   refreshPing();
   refreshTasks();
   refreshRecent();
+  initPageSniff();
   setInterval(refreshTasks, 1500);
 
   const cs = $("clearSniff");
@@ -159,12 +254,23 @@ document.addEventListener("DOMContentLoaded", () => {
       token: $("token").value.trim(),
       minSizeMB: parseInt($("minSizeMB").value, 10) || 0,
       onlyExtensions: $("onlyExtensions").value.trim(),
+      takeoverExts: $("takeoverExts").value.trim(),
+      siteWhitelist: $("siteWhitelist").value.trim(),
+      siteBlacklist: $("siteBlacklist").value.trim(),
+      headerJudge: $("headerJudge").checked,
     };
     chrome.runtime.sendMessage({ type: "save", data }, (resp) => {
       const m = $("statusMsg");
       m.textContent = (resp && resp.ok) ? "已保存 ✓" : "保存失败";
       m.className = "statusMsg " + ((resp && resp.ok) ? "ok" : "bad");
       refreshPing();
+    });
+  });
+
+  $("takeoverExts").addEventListener("input", countExts);
+  $("extReset").addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "idm_exts" }, (resp) => {
+      if (resp && resp.ok) { $("takeoverExts").value = resp.text; countExts(); }
     });
   });
 

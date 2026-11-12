@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import threading
+import time
 from http.cookiejar import DefaultCookiePolicy
 from urllib.parse import urljoin
 
@@ -103,6 +104,15 @@ class Http:
         except Exception:
             pass
 
+    def _key(self):
+        return (repr(sorted((self.proxies or {}).items())), repr(self.verify), repr(self.timeout),
+                bool(self.s.trust_env))
+
+    def release(self):
+        """流已读到结尾、连接干净 → 放回全局空闲池让下一个任务（大量小文件）复用同一条 TCP/TLS 连接；
+        池满或过期就真关。只在调用方确定响应已读完时才调用，读一半的连接必须 close()。"""
+        _POOL.put(self)
+
     def get(self, url, headers, start=None, end=None, method="GET", data=None):
         """GET（或 POST：每个分片重发同一请求体 + Range，Gopeed 式）；start/end 为闭区间字节号
         （end=None 表示到文件尾）。返回 (response, final_url, headers_after_redirects)。
@@ -143,6 +153,73 @@ class Http:
             self.final_method, self.final_data = method, data
             return r, cur, h
         raise SpeedError("http", "重定向次数过多")
+
+
+class _IdlePool:
+    """小文件连接复用：按 (代理, 校验, 超时, trust_env) 存空闲 Http，最多 MAXN 个、空闲超过 TTL 秒就丢。
+    Session 内部的 urllib3 池按主机分连接，所以同一个 Http 对不同站点也正确。"""
+    MAXN = 16
+    TTL = 12.0
+
+    def __init__(self):
+        self._lk = threading.Lock()
+        self._idle = []          # [(t, key, Http)]
+        self.reused = 0
+
+    def get(self, proxies, verify, timeout, trust_env):
+        key = (repr(sorted((proxies or {}).items())), repr(verify), repr(timeout), bool(trust_env))
+        now = time.monotonic()
+        stale = []
+        got = None
+        with self._lk:
+            keep = []
+            for t, k, h in self._idle:
+                if now - t > self.TTL:
+                    stale.append(h)
+                elif got is None and k == key:
+                    got = h
+                else:
+                    keep.append((t, k, h))
+            self._idle = keep
+            if got is not None:
+                self.reused += 1
+        for h in stale:
+            h.close()
+        return got
+
+    def put(self, h):
+        drop = []
+        with self._lk:
+            self._idle.append((time.monotonic(), h._key(), h))
+            while len(self._idle) > self.MAXN:
+                drop.append(self._idle.pop(0)[2])
+        for x in drop:
+            x.close()
+
+    def clear(self):
+        with self._lk:
+            items, self._idle = self._idle, []
+        for _t, _k, h in items:
+            h.close()
+
+
+_POOL = _IdlePool()
+
+
+def acquire_http(proxies=None, verify=True, timeout=(15, 30), trust_env=True):
+    """优先拿空闲池里同参数的连接，没有再新建。"""
+    h = _POOL.get(proxies, verify, timeout, trust_env)
+    if h is None:
+        h = Http(proxies=proxies, verify=verify, timeout=timeout, trust_env=trust_env)
+        h.from_pool = False
+    else:
+        h.from_pool = True
+    return h
+
+
+def pool_stats():
+    with _POOL._lk:
+        return {"idle": len(_POOL._idle), "reused": _POOL.reused}
 
 
 def read1(resp, n):

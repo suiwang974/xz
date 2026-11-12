@@ -19,7 +19,7 @@ import time
 from collections import deque
 
 from . import profiles
-from .backends import Http, Sidecar, Storage, clean_headers, parse_content_range, read1
+from .backends import Http, acquire_http, Sidecar, Storage, clean_headers, parse_content_range, read1
 from .errors import CancelledError, SpeedError, http_error, network_error
 
 CHUNK = 256 * 1024
@@ -114,6 +114,7 @@ class _Worker:
         self.last_data = time.monotonic()
         self.thread = None
         self.open_ended = False         # 正在读探测时那条开放区间响应（一直读到文件尾）
+        self.reusable = False           # 最后一个响应干净读完 → 收工时连接可放回池复用
 
     def new_connection(self):
         self.http.close()
@@ -274,6 +275,11 @@ class DownloadTask:
         self._storage = None
         self.single = False
 
+    def _acquire_http(self):
+        """探测请求用：先从全局空闲池拿同参数的连接（大量小文件时省掉每个文件一次 TCP/TLS 握手）。"""
+        return acquire_http(proxies=self.proxies, verify=self.verify, timeout=self.timeout,
+                            trust_env=self.trust_env)
+
     def _new_http(self):
         return Http(proxies=self.proxies, verify=self.verify, timeout=self.timeout,
                     trust_env=self.trust_env)
@@ -414,7 +420,7 @@ class DownloadTask:
             self.sidecar.remove()
         start_at = resume["ranges"][0][0] if resume else 0
 
-        http = self._new_http()
+        http = self._acquire_http()
         attempt = 0
         while True:
             try:
@@ -426,11 +432,18 @@ class DownloadTask:
             try:
                 resp, final, hdrs = http.get(self.url, self.headers, start=start_at, method=self.method, data=self.data)
             except SpeedError as e:
+                if e.kind == "network" and getattr(http, "from_pool", False):
+                    # 空闲池里的旧连接可能已被服务器关掉：换新连接立刻重试，不算一次失败
+                    http.close()
+                    http = self._new_http()
+                    self.stats["requests"] -= 1
+                    continue
                 if e.kind != "network" or attempt >= self.max_probe_retries:
                     raise
                 attempt += 1
                 self._stop.wait(backoff_delay(attempt))
                 continue
+            http.from_pool = False
             st = resp.status_code
             if st in (429, 503) or (500 <= st < 600 and st not in (501, 505)):
                 ra = _retry_after(resp)
@@ -567,7 +580,7 @@ class DownloadTask:
                 st = resp.status_code
                 resp.close()
                 raise http_error(st)
-        http.close()
+        http.release()   # 响应已读完且长度对得上：连接放回池复用
         if self.total is None:
             self.total = off
         self._finalize(storage)
@@ -805,7 +818,10 @@ class DownloadTask:
                     w.new_connection()      # 慢连接：换一条新 TCP 再来
         finally:
             self._give_back(w)
-            w.http.close()
+            if w.reusable and not getattr(self, "_fatal", None):
+                w.http.release()          # 干净收工：连接进全局空闲池，下一个小文件直接复用
+            else:
+                w.http.close()
             with self._lk:
                 if w in self._workers:
                     self._workers.remove(w)
@@ -841,7 +857,9 @@ class DownloadTask:
             req_end = None              # 探测响应：开放区间
             w.open_ended = True
         w.resp = resp
+        w.reusable = False
         drained = False
+        oe_clean = False
         try:
             while True:
                 if self._stop.is_set():
@@ -872,6 +890,10 @@ class DownloadTask:
                         shrunk = req_end is None or seg.end != req_end
                     if finished:
                         drained = (not shrunk) and allowed == len(data)
+                        if req_end is None and seg.end == self.total and allowed == len(data):
+                            # 开放区间的探测响应：Content-Length 恰好等于这条连接收到的全部字节 → 响应已完整读完
+                            cl = resp.headers.get("Content-Length")
+                            oe_clean = bool(cl and cl.isdigit() and int(cl) == w.bytes)
                         self._wake.set()
                         break
                 if eof:
@@ -886,9 +908,10 @@ class DownloadTask:
         finally:
             w.resp = None
             w.open_ended = False
-            if drained and req_end is not None:
+            if (drained and req_end is not None) or oe_clean:
                 try:
                     resp.raw.release_conn()   # 读满了：连接放回池子，下一段复用
+                    w.reusable = True
                 except Exception:
                     resp.close()
             else:

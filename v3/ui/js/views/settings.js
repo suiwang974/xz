@@ -6,6 +6,7 @@ import { icon } from '../icons.js';
 import * as api from '../api.js';
 import { S, setSetting } from '../store.js';
 import { toast } from '../ui/toast.js';
+import { modal } from '../ui/modal.js';
 import { BUILTIN, pathToUrl, previewBg, clearBgFail } from '../ui/background.js';
 
 const IS_WIN = /win/i.test(navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || '');
@@ -55,6 +56,7 @@ export function renderSettings() {
   cards.append(h('div.card', h('div.ch', h('h3', 'RPC / 接入')), h('div.cb',
     h('div.set', h('div.l', h('b', '接口地址'), h('small', 'aria2 兼容 JSON-RPC，浏览器扩展 / 第三方工具用')), h('div.c', h('span.mono', rpc.url || '—'))),
     h('div.set', h('div.l', h('b', '令牌')), h('div.c', h('span', rpc.token_set ? '已设置' : '未设置'))))));
+  cards.append(toolsCard());
   cards.append(h('div.muted#setNone.hidden', { style: { padding: '20px 4px' } }, '没有匹配的设置项。'));
   const body = h('div.vbody', cards);
   root.append(head, body);
@@ -263,3 +265,46 @@ window.addEventListener('sdl-bg', (e) => {
   if (m) m.textContent = msg;
   toast({ kind: 'warn', title: '背景图片加载失败', body: msg });
 });
+
+
+// ---------------- 工具与诊断：打开目录/日志、提示音试听、运行自检、Cookie 登录（高级，默认折叠）
+function toolBtn(id, label, fn) {
+  return h('button.btn#' + id, { type: 'button', on: { click: fn } }, label);
+}
+async function runSelftest() {
+  let r;
+  try { r = await api.rpc('sniffdl.selftest'); } catch (e) { toast({ kind: 'err', title: '自检失败', body: String(e.message || e) }); return; }
+  const items = r?.items || [];
+  const list = h('div#selftestList', { style: { display: 'grid', gap: '8px', minWidth: '420px' } },
+    items.map((i) => h('div.stitem', { 'data-ok': i.ok ? '1' : '0', style: { display: 'grid', gridTemplateColumns: '22px 1fr', gap: '8px', alignItems: 'start' } },
+      h('span', { style: { color: i.ok ? 'var(--ok)' : 'var(--err)', fontWeight: '700' } }, i.ok ? '✓' : '✗'),
+      h('div', h('b', i.name), h('div.muted', { style: { fontSize: '12px', wordBreak: 'break-all' } }, i.detail || ''),
+        i.ok || !i.fix ? null : h('div', { style: { fontSize: '12px', color: 'var(--warn)' } }, '怎么办：' + i.fix)))));
+  await modal({ title: r?.ok ? '自检通过' : '自检发现问题', icon: r?.ok ? 'checkc' : 'alert', iconColor: r?.ok ? 'var(--ok)' : 'var(--err)',
+    body: list, actions: [{ label: '知道了', pri: true, value: true }] });
+}
+function toolsCard() {
+  const cookieLine = h('span.muted#ckInfo', '读取中…');
+  const site = h('input.input#ckSite', { placeholder: '登录页地址，留空 = B 站', style: { width: '260px' } });
+  api.rpc('sniffdl.cookie.info').then((c) => { cookieLine.textContent = `已保存 ${c?.stored ?? 0} 条 Cookie · 当前来源：${c?.mode || '自动'}`; }).catch(() => { cookieLine.textContent = '内核未返回 Cookie 信息'; });
+  const d = h('details.card#toolsCard', { 'data-sec': '工具与诊断', open: openSecs.has('工具与诊断') },
+    h('summary', h('span.svg.chev', { html: icon('chev', 's14') }), h('h3', '工具与诊断'), h('span.sub', '打开目录 · 自检 · 登录')),
+    h('div.cb',
+      h('div.set', h('div.l', h('b', '常用位置'), h('small', '在系统文件管理器里打开')),
+        h('div.c', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          toolBtn('btnOpenDir', '打开保存目录', async () => { const r = await api.rpc('sniffdl.os.openOutdir').catch((e) => ({ ok: false, error: String(e.message || e) })); toast(r?.ok === false ? { kind: 'err', title: '打不开', body: r.error || '' } : { kind: 'ok', title: '已打开保存目录' }); }),
+          toolBtn('btnOpenLog', '打开日志文件', async () => { const r = await api.rpc('sniffdl.os.openLog').catch((e) => ({ ok: false, error: String(e.message || e) })); toast(r?.ok === false ? { kind: 'err', title: '打不开', body: r.error || '' } : { kind: 'ok', title: '已打开日志' }); }))),
+      h('div.set', h('div.l', h('b', '完成提示音'), h('small', '试听一下现在的提示音（上面的开关管是否播放）')),
+        h('div.c', toolBtn('btnChime', '试听', () => window.__sdlPlayChime?.()))),
+      h('div.set', h('div.l', h('b', '运行自检'), h('small', '检查 aria2、ffmpeg、yt-dlp、保存目录、端口，几秒完成，不联网')),
+        h('div.c', toolBtn('btnSelftest', '开始自检', runSelftest))),
+      h('div.set', h('div.l', h('b', '网站登录（Cookie）'), h('small', '需要登录才能下的站点：弹出浏览器登录一次，之后自动带上；也可在「Cookie 来源」里选直接读浏览器')),
+        h('div.c', { style: { display: 'grid', gap: '8px' } }, cookieLine,
+          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, site,
+            toolBtn('btnCkLogin', '打开登录窗', async () => {
+              const r = await api.rpc('sniffdl.cookie.login', site.value.trim()).catch((e) => ({ ok: false, msg: String(e.message || e) }));
+              toast({ kind: r?.ok === false ? 'err' : 'info', title: '网站登录', body: r?.msg || r?.error || '已打开登录窗' });
+            }))))));
+  d.addEventListener('toggle', () => { if (query) return; d.open ? openSecs.add('工具与诊断') : openSecs.delete('工具与诊断'); });
+  return d;
+}

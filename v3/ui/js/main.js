@@ -169,8 +169,29 @@ function showKeys() {
 
 // ---------------- SSE 事件接入
 document.addEventListener('sdl:nav', (e) => { const v = e.detail?.view; const n = NAV.find((x) => x.id === v || x.view === v); if (n) go(n.id); });
+// 完成提示音（设置 sound）：WebAudio 现场合成两声短提示，不带任何音频文件。
+let _chimeCtx = null;
+function playChime() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    _chimeCtx = _chimeCtx || new AC();
+    if (_chimeCtx.state === 'suspended') _chimeCtx.resume?.();
+    const t0 = _chimeCtx.currentTime;
+    [[880, 0], [1318.5, 0.14]].forEach(([f, dt]) => {
+      const o = _chimeCtx.createOscillator(); const g = _chimeCtx.createGain();
+      o.type = 'sine'; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t0 + dt);
+      g.gain.exponentialRampToValueAtTime(0.18, t0 + dt + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.35);
+      o.connect(g); g.connect(_chimeCtx.destination); o.start(t0 + dt); o.stop(t0 + dt + 0.4);
+    });
+  } catch (e) { /* 没有音频设备就算了 */ }
+}
+window.__sdlPlayChime = playChime;
 api.on('notify', (d) => {
   if (!d) return;
+  if (d.kind === 'done' && S.settings?.sound !== false) playChime();
   const kind = d.kind === 'error' ? 'err' : d.kind === 'done' ? 'ok' : 'info';
   if (d.kind === 'started') return;   // 添加时 adder 已经提示过
   const actions = d.gid && S.tasks.has(d.gid) ? [{ label: '详情', fn: () => openDetail(d.gid) }] : undefined;

@@ -100,6 +100,11 @@ def main(argv=None):
     out = {"ok": ok[0], "fail": len(urls) - ok[0], "elapsed": round(el, 4), "bytes": nbytes[0],
            "errors": errors[:20], "logs": [l for l in eng.logs if "完成" in l][:5],
            "via": a.via}
+    try:
+        from sdl_speed.backends import pool_stats
+        out["pool"] = pool_stats()      # 连接复用情况（reused=从空闲池拿到旧连接的次数）
+    except Exception:
+        pass
     print(json.dumps(out, ensure_ascii=False))
     return 0 if ok[0] == len(urls) else 1
 

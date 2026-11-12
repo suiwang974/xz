@@ -73,6 +73,21 @@
         <label>扩展名白名单</label>
         <input type="text" id="onlyExtensions" placeholder="留空=全部，如 exe,zip,mp4" />
       </div>
+      <details class="adv" id="advTakeover">
+        <summary>高级 · 接管哪些下载</summary>
+        <label class="switchRow small">
+          <span class="switchLabel">按响应头判定（附件 / 非网页类型，没后缀也接管）</span>
+          <span class="switch"><input type="checkbox" id="headerJudge" /><span class="slider"></span></span>
+        </label>
+        <div class="advLabel">接管的文件类型 <span id="extCount" class="unit"></span></div>
+        <textarea id="takeoverExts" rows="5" spellcheck="false" placeholder="空格或逗号分隔，如 zip exe mp4；清空 = 只按 SniffDL 内核设置"></textarea>
+        <div class="advBtns"><button id="extReset" class="miniGhost" type="button">恢复默认（对标 IDM）</button></div>
+        <div class="advLabel">总是接管的站点（每行一个域名）</div>
+        <textarea id="siteWhitelist" rows="2" spellcheck="false" placeholder="如 example.com"></textarea>
+        <div class="advLabel">从不接管的站点（每行一个域名）</div>
+        <textarea id="siteBlacklist" rows="2" spellcheck="false" placeholder="如 bank.example.com"></textarea>
+        <div class="hint">与 SniffDL「设置 › 高级 › 浏览器接管」取并集生效。按住 Alt 点击链接 = 这一次交给浏览器自己下。</div>
+      </details>
       <div class="btns">
         <button id="save" class="primary">保存</button>
         <button id="test" class="ghost">测试连接</button>
@@ -83,6 +98,15 @@
     <section class="card tasks">
       <div class="cardTitle"><i class="tick"></i>搬运中 / 稍后 / 最近</div>
       <ul id="taskList"><li class="empty">暂无任务</li></ul>
+    </section>
+
+    <section class="card tasks" id="pageSniffCard">
+      <div class="cardTitle withBtn"><i class="tick"></i><span>本页嗅探到的媒体</span>
+        <button id="pushAllSniff" class="miniGhost">全部下载</button>
+        <button id="clearPageSniff" class="miniGhost">清空</button>
+      </div>
+      <div id="pageSniff"><div class="empty">本页还没有视频/音频请求；播放一下就会出现</div></div>
+      <div class="statusMsg" id="sniffMsg"></div>
     </section>
 
     <section class="card tasks">

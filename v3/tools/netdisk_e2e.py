@@ -9,6 +9,7 @@
 再用 aria2.tellStatus / tellActive / tellStopped 盯任务直到完成或失败。
 
     python tools/netdisk_e2e.py [--aria2c 路径] [--only A,B,...] [--bench]
+    python tools/netdisk_e2e.py --v3 [--only A,B,C,D,G,H]     # 被测对象换成 v3 内核（子进程，自研引擎，不依赖 aria2c）
 
 场景：
   A 正常推送（Cookie+UA 齐）→ 必须真下完 + sha256 对 + 服务端每个请求都带推送方给的 UA/Cookie（一字不改）+ 真多连接
@@ -87,9 +88,47 @@ def make_backend(tmp, aria2c, logs):
     return V, app
 
 
+V3_TOKEN = "ndv3tok"
+# v3 内核里注入的 mock 网盘规则（与 H 组进程内版本一致）
+V3_MOCK_PROFILE = {"key": "mock", "name": "mock网盘", "dl_hosts": ["127.0.0.1"], "cookie_domain": "127.0.0.1",
+                   "referer": "https://pan.quark.cn/", "default_ua": None, "conn": 6, "min_split": "1M",
+                   "use_aria2": True, "need_cookie": True, "expiry": "auth_key", "tips": "mock"}
+
+
+def start_v3_core(tmp):
+    """自起 v3 内核子进程（tests/ui_smoke_core.py），返回 (进程, 带 cfg 的桩 app, rpc 端口)。"""
+    import socket
+    import subprocess
+    data = os.path.join(tmp, "v3data")
+    out = os.path.join(tmp, "out")
+    os.makedirs(out)
+    sk = socket.socket()
+    sk.bind(("127.0.0.1", 0))
+    port = sk.getsockname()[1]
+    sk.close()
+    env = dict(os.environ, SNIFFDL_DRYRUN_OS="1", NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
+               SDL_TEST_NETDISK_PROFILES=json.dumps([V3_MOCK_PROFILE]))
+    env.pop("DISPLAY", None)
+    core = subprocess.Popen([sys.executable, os.path.join(ROOT, "tests", "ui_smoke_core.py"),
+                             "--data-dir", data, "--port", str(port), "--runtime", os.path.join(tmp, "runtime.json"),
+                             "--ui-token", V3_TOKEN], env=env,
+                            stdout=open(os.path.join(tmp, "core.out"), "w"), stderr=subprocess.STDOUT)
+    r = Rpc(port, V3_TOKEN)
+    t0 = time.time()
+    while time.time() - t0 < 30:
+        try:
+            if r.call("sniffdl.ping", []).get("result"):
+                break
+        except Exception:
+            time.sleep(0.3)
+    r.call("sniffdl.settings.set", [{"outdir": out, "clip_watch": False}])
+    return core, types.SimpleNamespace(cfg={"outdir": out}), port
+
+
 class Rpc:
-    def __init__(self, port):
+    def __init__(self, port, ui_token=""):
         self.url = "http://127.0.0.1:%d/jsonrpc" % port
+        self.ui_token = ui_token
 
     def call(self, method, params, origin=None):
         body = json.dumps({"id": int(time.time() * 1000), "jsonrpc": "2.0",
@@ -97,6 +136,8 @@ class Rpc:
         h = {"Accept": "application/json", "Content-Type": "application/json;charset=UTF-8"}
         if origin:
             h["Origin"] = origin
+        if self.ui_token:
+            h["X-SniffDL-Token"] = self.ui_token       # v3 内核的 sniffdl.* 私有方法要界面令牌
         req = urllib.request.Request(self.url, data=body, headers=h)
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read().decode("utf-8"))
@@ -157,6 +198,7 @@ def main():
     ap.add_argument("--aria2c", default=shutil.which("aria2c") or os.path.expanduser("~/bin/aria2c"))
     ap.add_argument("--only", default="A,B,C,D,E,F,G,H")
     ap.add_argument("--bench", action="store_true")
+    ap.add_argument("--v3", action="store_true", help="被测对象 = 自起的 v3 内核子进程（只跑 A,B,C,D,F,G,H 里适用的）")
     ap.add_argument("--mb", type=int, default=8)
     ap.add_argument("--bench-mb", type=int, default=64)
     ap.add_argument("--bench-kbps", type=int, default=512, help="mock 单连接限速 KB/s")
@@ -169,15 +211,23 @@ def main():
     import rpc_server as RS
     tmp = tempfile.mkdtemp(prefix="sdl_nd_")
     logs = []
-    V, app = make_backend(tmp, a.aria2c, logs)
+    core = None
     mport = 18798
+    if a.v3:
+        core, app, rport = start_v3_core(tmp)
+    else:
+        V, app = make_backend(tmp, a.aria2c, logs)
     M.serve(mport, a.mb * 1024 * 1024, "quark-cloud-drive", "__pus=OK")
     M.CFG["slow_random"] = bool(a.bench_random)
     M.CFG["fail_first"] = 0
     BENCH_FLAKY[0] = a.bench_flaky
-    srv = RS.RpcServer(app, port=0, token="")
-    rport = srv.start()
-    rpc = Rpc(rport)
+    if a.v3:
+        srv = types.SimpleNamespace(stop=lambda: None)
+        rpc = Rpc(rport, V3_TOKEN)
+    else:
+        srv = RS.RpcServer(app, port=0, token="")
+        rport = srv.start()
+        rpc = Rpc(rport)
     want = M.expected_sha256()
     res = []
 
@@ -192,6 +242,8 @@ def main():
 
         if "A" in only:
             urllib.request.urlopen("http://127.0.0.1:%d/__reset" % mport).read()
+            if a.v3:
+                M.CFG["conn_kbps"] = 2048      # 自研引擎对快速小文件只开 1 路；网盘 CDN 单连接限速才是真实场景，A6 才有意义
             link = mock_url(mport)
             r = rpc.call("aria2.addUri", linkswift_addUri(link, "hanshuang-pojia-2.0.2.zip", good_hdr))
             gid = r.get("result")
@@ -214,6 +266,7 @@ def main():
             ok("A4 每个请求 UA 与推送方一字不差", ua_ok, "%d 个请求; 例 UA=%s" % (len(reqs), reqs[0]["ua"][:50] if reqs else "-"))
             ok("A5 每个请求 Cookie 与推送方一字不差", ck_ok, (reqs[0]["cookie"] if reqs else "-"))
             ok("A6 多连接（服务端最大并发>1）", stt["max_conc"] > 1, "max_conc=%d" % stt["max_conc"])
+            M.CFG["conn_kbps"] = 0
 
         if "B" in only:
             link = mock_url(mport, fn="nocookie.zip", tag="ngTX6F13b")
@@ -236,10 +289,15 @@ def main():
         if "D" in only:
             # 模拟记忆系统恢复出来的「待继续」旧任务（旧签名），然后脚本推同一文件的新链接
             old = mock_url(mport, exp_delta=-3600, fn="again.zip", tag="ngTX6F13d")
-            gid_old = app.rpc_add_uri(old, {"out": "again.zip"}, defer=True, src="user")
-            with app._rpc_lock:
-                app._rpc_tasks[gid_old]["status"] = "paused"
-                app._rpc_tasks[gid_old]["note"] = "重启未自动重下·点继续才跑"
+            if a.v3:
+                # v3：旧签名链接先真失败（过期）留在任务表里，再推同名新链接必须另开一条真下完
+                gid_old = rpc.call("aria2.addUri", linkswift_addUri(old, "again.zip", good_hdr)).get("result")
+                wait_task(rpc, gid_old, 60)
+            else:
+                gid_old = app.rpc_add_uri(old, {"out": "again.zip"}, defer=True, src="user")
+                with app._rpc_lock:
+                    app._rpc_tasks[gid_old]["status"] = "paused"
+                    app._rpc_tasks[gid_old]["note"] = "重启未自动重下·点继续才跑"
             new = mock_url(mport, fn="again.zip", tag="ngTX6F13d")
             r = rpc.call("aria2.addUri", linkswift_addUri(new, "again.zip", good_hdr))
             gid = r.get("result")
@@ -249,7 +307,7 @@ def main():
                "返回gid=%s(旧=%s) status=%s err=%s" % (gid, gid_old, st and st.get("status"),
                                                        (st or {}).get("errorMessage", "")[:60]))
 
-        if "E" in only:
+        if "E" in only and not a.v3:      # v3 直链走自研引擎、不借共享 aria2 守护进程，此场景不适用
             # 共享 aria2(BT) 守护进程被占满：max-concurrent-downloads=1 + 一条永远连不上的任务。
             # 修复前直链借用这个守护进程 → 无限排队；修复后直链走独立 HTTP 引擎，不受影响
             try:
@@ -276,7 +334,7 @@ def main():
             except Exception as e:
                 ok("E1 共享 aria2 队列被占满时推送仍能下完", False, "异常 %s" % e)
 
-        if "F" in only:
+        if "F" in only and not a.v3:      # v3 的 token 鉴权由 rpc_servers_test 覆盖
             srv2 = RS.RpcServer(app, port=0, token="s3cret")
             p2 = srv2.start()
             rpc2 = Rpc(p2)
@@ -328,6 +386,7 @@ def main():
         if "H" in only:
             # 手动粘贴直链（界面 sniffdl.addDirect）：① 扩展同步来的浏览器 Cookie 按域自动补齐；② 自定义请求头框
             import netdisk_rules as ND
+            # v3：内核在子进程，mock 网盘规则由 ui_smoke_core 按环境变量 SDL_TEST_NETDISK_PROFILES 注入（见 start_v3_core）
             ND.PROFILES.insert(0, {"key": "mock", "name": "mock网盘", "dl_hosts": ("127.0.0.1",),
                                    "cookie_domain": "127.0.0.1", "referer": "https://pan.quark.cn/",
                                    "default_ua": None, "conn": 6, "min_split": "1M", "use_aria2": True,
@@ -340,6 +399,8 @@ def main():
                 ok("H1 sniffdl.syncCookies 收下浏览器 Cookie", (r.get("result") or {}).get("n") == 2, json.dumps(r)[:80])
                 M.CFG["ua"] = ""
                 urllib.request.urlopen("http://127.0.0.1:%d/__reset" % mport).read()
+                if a.v3:
+                    M.CFG["conn_kbps"] = 2048      # 同 A6：单连接限速的 CDN 才看得出连接数
                 link = mock_url(mport, fn="paste.zip", tag="ngTX6F13p")
                 r = rpc.call("sniffdl.addDirect", [{"url": link, "headers_text": ""}])
                 gid = (r.get("result") or {}).get("gid")
@@ -353,6 +414,7 @@ def main():
                 # aria2 首个探测连接被它中途弃用时 mock 侧还在吐数据，会多计 1 条 → 上限按 规则+1 判
                 ok("H3 网盘规则连接数生效（mock 规则=6，aria2 split=6）", 1 < stt["max_conc"] <= 7,
                    "max_conc=%d" % stt["max_conc"])
+                M.CFG["conn_kbps"] = 0
                 M.CFG["ua"] = "quark-cloud-drive"
                 urllib.request.urlopen("http://127.0.0.1:%d/__reset" % mport).read()
                 link = mock_url(mport, fn="curl.zip", tag="ngTX6F13q")
@@ -375,8 +437,18 @@ def main():
             bench(app, rpc, M, mport, a.bench_mb, a.bench_kbps, a.bench_slow_every)
     finally:
         srv.stop()
+        if core:
+            core.terminate()
+            try:
+                core.wait(10)
+            except Exception:
+                core.kill()
+            try:
+                logs.extend(open(os.path.join(tmp, "core.out"), encoding="utf-8", errors="replace").read().splitlines()[-40:])
+            except Exception:
+                pass
         try:
-            if app._bt.get("proc"):
+            if getattr(app, "_bt", None) and app._bt.get("proc"):
                 app._bt["proc"].kill()
         except Exception:
             pass

@@ -76,6 +76,37 @@ def main():
             hh = {k.lower(): v for k, v in (got[0] if got else {}).items()}
             E.check("内核真下载请求带 Referer", "/s.html" in hh.get("referer", ""), hh)
             E.check("内核真下载请求带浏览器 User-Agent", "Chrome" in hh.get("user-agent", ""), hh)
+            # ---- popup 嗅探列表 UI 组（A2）----
+            ui = ctx.new_page(); ui.set_viewport_size({"width": 420, "height": 900})
+            ui.goto(sw.url.rsplit("/", 1)[0] + "/popup.html?tab=%s" % tid)
+            E.wait(lambda: ui.query_selector("#pageSniff .row"), 8)
+            grp = ui.eval_on_selector_all("#pageSniff .grp", "e=>e.map(x=>x.dataset.kind)")
+            E.check("UI：按类型分组（视频/音频/流媒体 m3u8）", grp == ["video", "audio", "m3u8"], grp)
+            rows = ui.eval_on_selector_all("#pageSniff .row", "e=>e.map(x=>[x.querySelector('.nm').textContent,x.querySelector('.sz').textContent])")
+            E.check("UI：行数 = 嗅探条数（图片/json 不在内）", len(rows) == len(urls) and not any(n in ("pic.png", "api.json") for n, _ in rows), rows)
+            sz = dict(rows).get("clip.mp4", "")
+            E.check("UI：显示人类可读大小（200000 B → 195 KB）", sz == "195 KB", sz)
+            E.check("UI：每行有「下载」按钮", ui.eval_on_selector_all("#pageSniff .row button.pushOne", "e=>e.length") == len(rows))
+            try:
+                os.makedirs(os.path.join(E.HERE, "docs", "ui_shots"), exist_ok=True)
+                ui.query_selector("#pageSniffCard").screenshot(path=os.path.join(E.HERE, "docs", "ui_shots", "ext_popup_sniff.png"))
+            except Exception as e:
+                print("截图失败", e)
+            pend0 = len(E.rpc(cport, "sniffdl.snapshot")["pending"])
+            ui.click("#pageSniff .row:has-text('song.mp3') button.pushOne")
+            okb = E.wait(lambda: ui.inner_text("#pageSniff .row:has-text('song.mp3') button").startswith("已推送"), 8)
+            E.check("UI：点「下载」→ 按钮变「已推送 ✓」", okb)
+            pend1 = E.wait(lambda: [x for x in E.rpc(cport, "sniffdl.snapshot")["pending"] if "song.mp3" in (x.get("url") or "")], 8)
+            E.check("UI：一键推送后内核待确认区出现 song.mp3", bool(pend1), pend1)
+            ui.click("#pushAllSniff")
+            E.wait(lambda: ui.eval_on_selector_all("#pageSniff .row button:not([disabled])", "e=>e.length") == 0, 12)
+            allp = E.wait(lambda: (lambda l: l if len(l) >= len(rows) - 1 else None)(
+                [x for x in E.rpc(cport, "sniffdl.snapshot")["pending"] if any(k in (x.get("url") or "") for k in ("clip.mp4", "live.m3u8", "blob"))]), 10)
+            E.check("UI：「全部下载」把其余条目都推给内核", bool(allp), E.rpc(cport, "sniffdl.snapshot")["pending"])
+            ui.click("#clearPageSniff")
+            E.wait(lambda: ui.query_selector("#pageSniff .empty"), 6)
+            E.check("UI：「清空」后列表为空且显示提示", ui.query_selector("#pageSniff .row") is None and ui.query_selector("#pageSniff .empty") is not None)
+            E.check("UI：清空后徽标消失", sw.evaluate("(id)=>chrome.action.getBadgeText({tabId:id})", tid) == "")
             ctx.close()
     finally:
         core.terminate()

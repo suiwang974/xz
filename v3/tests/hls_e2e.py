@@ -82,7 +82,11 @@ def main():
     env = dict(os.environ, SNIFFDL_DRYRUN_OS="1", NO_PROXY="127.0.0.1,localhost,::1")
     for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "DISPLAY"):
         env.pop(k, None)
-    core = subprocess.Popen([sys.executable, os.path.join(E.HERE, "tests", "ui_smoke_core.py"), "--data-dir", E.DATA,
+    # SDL_CORE_EXE=冻结产物路径时，改对 PyInstaller 产物跑同一套用例（不借沙箱 PYTHONPATH）
+    _exe = os.environ.get("SDL_CORE_EXE")
+    if _exe:
+        env.pop("PYTHONPATH", None)
+    core = subprocess.Popen(([_exe] if _exe else [sys.executable, os.path.join(E.HERE, "tests", "ui_smoke_core.py")]) + ["--data-dir", E.DATA,
                              "--port", str(E.PORT[0]), "--runtime", os.path.join(E.DATA, "runtime.json"),
                              "--ui-token", E.TOKEN],
                             cwd=E.HERE, env=env, stdout=open(os.path.join(E.DATA, "core.out"), "w"),
@@ -215,6 +219,26 @@ def main():
         p = os.path.join(E.OUT, "dash1.mp4")
         check("9 DASH(.mpd)：成品 dash1.mp4 = 初始化段 + 4 片",
               bool(v and v["status"] == "complete" and os.path.isfile(p) and open(p, "rb").read() == vi + b"".join(vs)), v)
+
+        # 10 主列表多码率：默认最高；任务 format=480 → 不超过 480p
+        for h, bw in ((360, 800000), (480, 1400000), (1080, 5000000)):
+            for i in range(3):
+                ROUTES["/v/m/%d/s%d.seg" % (h, i)] = seg("m%d" % h, i, 10000)
+            ROUTES["/v/m/%d/i.m3u8" % h] = m3u8(["s%d.seg" % i for i in range(3)])
+        ROUTES["/v/m/master.m3u8"] = (
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n360/i.m3u8\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080\n1080/i.m3u8\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=854x480\n480/i.m3u8\n").encode()
+        g = addm("best.m3u8", "/v/m/master.m3u8")
+        v = E.wait_status(g, ("complete", "error"), 30)
+        p = os.path.join(E.OUT, "best.ts")
+        check("10 主列表默认选 1080p 码率", bool(v and v["status"] == "complete" and os.path.isfile(p)
+              and open(p, "rb").read() == b"".join(seg("m1080", i, 10000) for i in range(3))), v)
+        g = addm("cap.m3u8", "/v/m/master.m3u8", format="480")
+        v = E.wait_status(g, ("complete", "error"), 30)
+        p = os.path.join(E.OUT, "cap.ts")
+        check("10b 任务 format=480 → 选 480p 码率", bool(v and v["status"] == "complete" and os.path.isfile(p)
+              and open(p, "rb").read() == b"".join(seg("m480", i, 10000) for i in range(3))), v)
     finally:
         try:
             E.raw_rpc("sniffdl.core.shutdown", [], timeout=5)

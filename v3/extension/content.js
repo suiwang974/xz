@@ -68,11 +68,25 @@
     const hosts = [location.hostname, lh];
     if (hosts.some((h) => hostIn(h, r.blacklist))) return false;
     const white = hosts.some((h) => hostIn(h, r.whitelist));
-    const ext = extOf(url);
+    // A16：<a download="名字.ext"> 的名字后缀也算（href 常是 /gen?id= 这种无后缀地址）
+    let dn = ""; try { dn = (a.getAttribute && a.getAttribute("download")) || ""; } catch (e) {}
+    const dm = String(dn).toLowerCase().match(/\.([a-z0-9]{1,8})$/);
+    const ext = extOf(url) || (dm ? dm[1] : "");
     if (white) return (a.hasAttribute && a.hasAttribute("download")) || DL_EXT.test(url) || (!!ext && (r.exts || []).includes(ext));
     if ((r.exts || []).length) return (r.exts || []).includes(ext);
     return (a.hasAttribute && a.hasAttribute("download")) || DL_EXT.test(url);
   }
+
+  // A16：主世界钩子（page_hook.js）报来的程序化 <a download>：转给后台记下文件名 + 记一次手势
+  try {
+    window.addEventListener("message", (ev) => {
+      try {
+        const d = ev && ev.data;
+        if (ev.source !== window || !d || d.__sniffdl !== "dl_hint" || !enabled) return;
+        chrome.runtime.sendMessage({ type: "dl_hint", url: String(d.url || ""), filename: String(d.filename || "").split(/[\\/]/).pop() }, () => { void chrome.runtime.lastError; });
+      } catch (e) {}
+    });
+  } catch (e) {}
 
   let _lastGestureSent = 0;
   document.addEventListener("click", (e) => {
@@ -106,7 +120,7 @@
     try {
       chrome.runtime.sendMessage(
         // click_dl：后台现取规则——v3 交内核、离线交回浏览器并提示、旧桌面端回落 0.6.0 网页中央卡（规则还没到也不会走错路）
-        { type: "click_dl", url, filename: "", referer: location.href, size: 0 },
+        { type: "click_dl", url, filename: ((a.getAttribute && a.getAttribute("download")) || "").split(/[\\/]/).pop(), referer: location.href, size: 0 },
         () => { void chrome.runtime.lastError; }
       );
     } catch (_) {}

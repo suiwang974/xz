@@ -20,6 +20,7 @@ import fnmatch
 import json
 import os
 import queue
+import re
 import shutil
 import threading
 import time
@@ -44,6 +45,7 @@ from . import bencode as BC
 from . import clipboard as CB
 from . import livehls as LIVE
 from . import hls as HLS
+from . import sidecar as SC
 from . import runtime as RT
 from . import speed as SPD
 
@@ -145,6 +147,7 @@ class Engine(V.App):
         self._last_clip = ""
         self.cfg = V.load_config()
         self._load_v3_keys()
+        V.INC_DIR_FN = self._work_dir      # yt-dlp 半成品也进 incomplete_dir（成品由 yt-dlp 移回保存位置）
         self._cfg_migrate_notes = list(V._CFG_MIGRATE_NOTES)
         self.theme = "feiyu"
         self._web_mode = True
@@ -571,6 +574,8 @@ class Engine(V.App):
             self._hook("start", t)
             if t.get("live"):
                 self._run_live(t)
+            elif self._sidecar_wanted(t) and self._run_sidecar(t):
+                pass
             elif self._hls_wanted(t) and self._run_hls(t):
                 pass
             else:
@@ -1378,6 +1383,78 @@ class Engine(V.App):
                 PU.reveal_path(cand)
                 return {"ok": True, "path": cand}
         return {"ok": False, "error": "还没拿到种子元数据（或已关闭「存一份 .torrent」）"}
+
+    # ---------------- 外挂引擎：N_m3u8DL-RE / BBDown（用户自己装的程序，找不到就当没开）
+    def _sidecar_wanted(self, t):
+        if t.get("_sc_off"):
+            return False
+        uri = t.get("uri") or ""
+        pt = S.get(self.cfg, "sidecar_paths")
+        try:
+            path = urlparse(uri).path.lower()
+        except Exception:
+            return False
+        if (path.endswith(".m3u8") or path.endswith(".mpd")) and S.get(self.cfg, "sidecar_m3u8"):
+            exe = SC.find("n_m3u8dl", pt)
+            if exe:
+                t["_sc"] = ("m3u8", exe)
+                return True
+        if S.get(self.cfg, "sidecar_bili") and SC.is_bili(uri):
+            exe = SC.find("bbdown", pt)
+            if exe:
+                t["_sc"] = ("bili", exe)
+                return True
+        return False
+
+    def _run_sidecar(self, t):
+        """True = 外挂已处理（成功或用户暂停）；False = 失败，调用方回落内置/yt-dlp。"""
+        kind, exe = t["_sc"]
+        d = t.get("dir") or self.cfg.get("outdir") or V.DEFAULT_OUTDIR
+        os.makedirs(d, exist_ok=True)
+        name = t.get("name") or ""
+        stem = V.safe_name(os.path.splitext(name)[0] if name else "video_%s" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+        label = "N_m3u8DL-RE" if kind == "m3u8" else "BBDown"
+        with self._rpc_lock:
+            t["status"] = "active"
+            t["start_ts"] = time.time()
+            t["statusMessage"] = "交给 %s 下载中…" % label
+        self._pet_react("busy")
+        self.log("[外挂] %s → %s" % (label, exe))
+
+        def on_line(ln):
+            m = re.search(r"(\d{1,3}(?:\.\d+)?)%", ln)
+            if m:
+                with self._rpc_lock:
+                    t["statusMessage"] = "%s · %s%%" % (label, m.group(1))
+        try:
+            if kind == "m3u8":
+                c = str(t.get("conns") or S.get(self.cfg, "task_conns") or "自动")
+                fp = SC.run_m3u8(exe, t["uri"], d, stem, headers=dict(t.get("headers") or {}),
+                                 threads=int(c) if c.isdigit() else 16, cancel=lambda: t.get("cancel"),
+                                 log=self.log, on_line=on_line)
+            else:
+                fp = SC.run_bili(exe, t["uri"], d, cancel=lambda: t.get("cancel"), log=self.log, on_line=on_line)
+        except InterruptedError:
+            with self._rpc_lock:
+                t["status"] = "paused"
+                t["downloadSpeed"] = 0
+            self._qmem_mark(force=True)
+            return True
+        except Exception as e:
+            self.log("[外挂] %s 失败（%s）→ 回落%s" % (label, str(e)[:100], "内置分段下载" if kind == "m3u8" else " yt-dlp"))
+            t["_sc_off"] = True
+            return False
+        with self._rpc_lock:
+            t["path"] = fp
+            t["name"] = os.path.basename(fp)
+            t["totalLength"] = t["downloadedLength"] = os.path.getsize(fp)
+            t["downloadSpeed"] = 0
+            t["status"] = "complete"
+            t["statusMessage"] = "%s 已完成" % label
+            t["done_ts"] = time.time()
+        self._qmem_mark(force=True)
+        self._rpc_fire_mascot(True)
+        return True
 
     # ---------------- 点播 m3u8 / mpd：内置分段并发下载（A17）
     def _hls_wanted(self, t):

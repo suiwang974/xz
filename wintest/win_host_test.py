@@ -48,9 +48,9 @@ def launch(T, extra=(), inspect=None, cdp=None):
     args = [ELECTRON]
     if inspect:
         args.append("--inspect=%d" % inspect)
+    if cdp:                                  # Chromium 开关放在应用路径之前，Windows 上位置在后可能被当成应用参数
+        args += ["--remote-debugging-port=%d" % cdp, "--remote-allow-origins=*"]
     args += [APP]
-    if cdp:
-        args.append("--remote-debugging-port=%d" % cdp)
     args += ["--user-data", os.path.join(T, "ud"), "--runtime", os.path.join(T, "runtime.json"),
              "--data-dir", os.path.join(T, "data"), "--state", os.path.join(T, "pet", "pet_state.json"),
              "--port", str(free_port())] + list(extra)
@@ -90,6 +90,26 @@ def find_page(br, sub):
     return None
 
 
+
+def _dump_cdp_diag(T, el, cdp, lg):
+    print("---- CDP 诊断 ----  electron poll=%r cdp=%d" % (el.poll(), cdp), flush=True)
+    try:
+        import psutil
+        pr = psutil.Process(el.pid)
+        print("children:", [(c.pid, c.name()) for c in pr.children(recursive=True)][:20], flush=True)
+        print("listen:", sorted({c.laddr.port for c in psutil.net_connections("inet") if c.status == "LISTEN"
+                                 and c.pid in [el.pid] + [x.pid for x in pr.children(recursive=True)]}), flush=True)
+    except Exception as e:
+        print("psutil diag err", repr(e), flush=True)
+    import glob
+    for f in glob.glob(os.path.join(T, "electron_*.out")) + [lg]:
+        try:
+            t = open(f, encoding="utf-8", errors="replace").read()
+            print("---- %s (%d bytes) 末 3000 ----\n%s" % (f, len(t), t[-3000:]), flush=True)
+        except Exception as e:
+            print("read", f, repr(e), flush=True)
+
+
 def run_a():
     T = os.path.join(BASE, "A")
     prep(T, "下载 输出")
@@ -114,8 +134,20 @@ def run_a():
 
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            br = wait(lambda: p.chromium.connect_over_cdp("http://127.0.0.1:%d" % cdp), 40, 0.5)
-            R.ok("A4 CDP 连上 Electron", br)
+            def _cdp_up():
+                try:
+                    import urllib.request
+                    return b"webSocketDebuggerUrl" in urllib.request.urlopen(
+                        "http://127.0.0.1:%d/json/version" % cdp, timeout=3).read()
+                except Exception:
+                    return False
+            up = wait(_cdp_up, 40, 1)
+            if not up:                      # 诊断：Electron 还活着吗、它的输出、端口监听、子进程、宿主日志
+                _dump_cdp_diag(T, el, cdp, lg)
+            br = p.chromium.connect_over_cdp("http://127.0.0.1:%d" % cdp, timeout=20000) if up else None
+            R.ok("A4 CDP 连上 Electron", br, "" if up else "端口 %d 40s 内没起来" % cdp)
+            if not br:
+                return None
             ui = wait(lambda: find_page(br, "ui/index.html"), 40)
             R.ok("A5 主窗加载 v3/ui/index.html", ui, ui and ui.url)
             errs = []

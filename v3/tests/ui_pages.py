@@ -218,7 +218,7 @@ def hm(dt):
 def t_settings(br, cport, core, errors):
     print("[设置]", flush=True)
     ctx, pg = open_ui(br, cport, errors=errors)
-    pg.keyboard.press("Alt+7")
+    pg.keyboard.press("Alt+9")
     pg.wait_for_selector("#vSettings .set[data-key]")
     sch = rpc(cport, "sniffdl.settings.get")["schema"]
     n_vis = len([s for s in sch if s["group"] != "hidden"])
@@ -276,7 +276,7 @@ def t_settings(br, cport, core, errors):
     check("重启内核后设置仍在", v["sound"] is False and v["max_concurrent"] == 3 and v["conflict"] == "重命名"
           and v["name_template"] == "{date}_{name}" and v["retry_count"] == 7, {k: v[k] for k in ("sound", "max_concurrent", "conflict", "name_template", "retry_count")})
     ctx, pg = open_ui(br, cport, errors=errors)
-    pg.keyboard.press("Alt+7")
+    pg.keyboard.press("Alt+9")
     pg.wait_for_selector("#set_sound", state="attached")
     check("重启后界面读到保存值", pg.evaluate("!document.getElementById('set_sound').checked && document.getElementById('set_max_concurrent').value==='3'"))
     ctx.close()
@@ -564,7 +564,7 @@ def t_shots(br, cport, fport):
         for vw, vh in ((1320, 860), (980, 640)):
             ctx, pg = open_ui(br, cport, scheme, vw, vh)
             sfx = "%s_%d" % (scheme, vw)
-            pg.keyboard.press("Alt+7")
+            pg.keyboard.press("Alt+9")
             pg.wait_for_selector("#set_sound", state="attached")
             time.sleep(0.3)
             pg.screenshot(path=os.path.join(SHOTS, "p2_%s_settings.png" % sfx))
@@ -629,7 +629,7 @@ BG_SELS = [("侧栏导航", ".nav button:not(.on) span:nth-child(2)"), ("当前�
 def t_bg(br, cport, fport, core, errors):
     print("[背景图]", flush=True)
     ctx, pg = open_ui(br, cport, errors=errors)
-    pg.keyboard.press("Alt+7")
+    pg.keyboard.press("Alt+9")
     pg.wait_for_selector("#bgPick .bgtile")
     check("外观卡：无背景 + 4 张内置 + 自定义 共 6 个缩略图", pg.locator("#bgPick .bgtile").count() == 6)
     check("默认无背景：保持原界面", pg.evaluate("!document.documentElement.dataset.bg") and pg.is_hidden('#vSettings .set[data-key="ui_bg_dim"]'))
@@ -733,7 +733,7 @@ def t_bg_shots(br, cport, fport):
                 pg.screenshot(path=os.path.join(SHOTS, "bg_%s_%s_modal.png" % (bg, sc)))
                 pg.keyboard.press("Escape")
                 time.sleep(0.3)
-            pg.keyboard.press("Alt+7")
+            pg.keyboard.press("Alt+9")
             pg.wait_for_selector("#bgPick")
             pg.evaluate("document.getElementById('lookCard').scrollIntoView({block: 'start'})")
             time.sleep(0.4)

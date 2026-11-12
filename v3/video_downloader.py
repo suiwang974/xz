@@ -1365,6 +1365,19 @@ def _truncate_utf8(s, max_bytes):
     return "".join(out)
 
 
+INC_DIR_FN = None   # 内核(Engine)注入：outdir -> 未完成目录（incomplete_dir）；None=不用
+
+
+def snifftmp_root(outdir):
+    """yt-dlp 半成品隔离目录 .snifftmp 所在的根：设了 incomplete_dir 就放那里，否则在保存位置。"""
+    try:
+        if INC_DIR_FN and outdir:
+            return INC_DIR_FN(outdir) or outdir
+    except Exception:
+        pass
+    return outdir
+
+
 def safe_name(s, maxlen=120):
     # maxlen 现为「UTF-8 字节预算」：中文标题也能安全截断，避免路径过长导致下载中途失败。
     s = unicodedata.normalize("NFC", str(s if s is not None else ""))
@@ -4308,7 +4321,7 @@ def download_one(entry, page_url, outdir, quality, on_progress,
     if not callable(abort):
         return _download_one_impl(entry, page_url, outdir, quality, on_progress, extra_opts, log, pp_hook, abort)
     stop = threading.Event()
-    tmpdir = os.path.join(outdir, ".snifftmp", hashlib.md5(
+    tmpdir = os.path.join(snifftmp_root(outdir), ".snifftmp", hashlib.md5(
         (entry.get("url") or entry.get("title") or "v").encode("utf-8", "ignore")).hexdigest()[:12])
 
     def _watch():
@@ -4424,7 +4437,7 @@ def _download_one_impl(entry, page_url, outdir, quality, on_progress,
     _tkey = hashlib.md5(
         (entry.get("url") or entry.get("title") or "v").encode("utf-8", "ignore")
     ).hexdigest()[:12]
-    _tmpdir = os.path.join(outdir, ".snifftmp", _tkey)
+    _tmpdir = os.path.join(snifftmp_root(outdir), ".snifftmp", _tkey)
     try:
         os.makedirs(_tmpdir, exist_ok=True)
     except Exception:
@@ -9310,6 +9323,34 @@ class App:
                 # 同一个种子引擎里已经有了（典型：重启后 bt.session 已把它续上，记忆系统恢复的任务
                 # 又点「继续」重新加了一份）→ 接管引擎里那份，别报失败、也别让那份在后台没人管地跑
                 _adopt = self._bt_find_by_infohash(st.get("errorMessage") or "", t.get("btGid"))
+                _emsg = st.get("errorMessage") or ""
+                if _adopt:
+                    # 刚删掉同一个种子、旧任务的线程还没来得及从引擎里摘掉它时再加：别接管一个正在被删的任务，
+                    # 等它摘完（最多 4 秒）再重新加一份；等不到它消失才是「引擎里真有一份」→ 接管
+                    for _w in range(8):
+                        time.sleep(0.5)
+                        if t.get("purge") or t.get("bt_stop") or t.get("cancel"):
+                            break
+                        if not self._bt_find_by_infohash(_emsg, t.get("btGid")):
+                            _adopt = ""
+                            break
+                    if not _adopt and not (t.get("purge") or t.get("bt_stop") or t.get("cancel")):
+                        try:
+                            self._bt_rpc("aria2.removeDownloadResult", [t.get("btGid")])
+                        except Exception:
+                            pass
+                        try:
+                            _ng = str(self._bt_add(uri, opts, headers=_hdr))
+                            with self._rpc_lock:
+                                t["btGid"] = _ng
+                                t["btMeta"] = (self._bt.get("meta") or {}).get(_ng, "")
+                                t["errorCode"] = "0"
+                                t["errorMessage"] = ""
+                            self._qmem_mark(force=True)
+                            self.log("[小夜·BT] 任务 %s 刚删的同一种子已摘净 → 重新加入 %s" % (gid[:6], _ng[:6]))
+                        except Exception as _e:
+                            self.log("[小夜·BT] 重新加入失败：%s" % str(_e)[:100])
+                        continue
                 if _adopt:
                     try:
                         self._bt_rpc("aria2.removeDownloadResult", [t.get("btGid")])
@@ -9998,7 +10039,7 @@ class App:
             uri = t.get("uri") or ""
             if outdir and uri:
                 key = hashlib.md5(uri.encode("utf-8", "ignore")).hexdigest()[:12]
-                tmp = os.path.join(outdir, ".snifftmp", key)
+                tmp = os.path.join(snifftmp_root(outdir), ".snifftmp", key)
                 if os.path.isdir(tmp):
                     shutil.rmtree(tmp, ignore_errors=True)
                 nm = t.get("name")
@@ -11114,11 +11155,21 @@ class App:
                 kw["proxies"] = pxd
             return _creq.get(url, **kw)
 
+        def _cffi_available():
+            try:
+                import importlib.util as _iu
+                return _iu.find_spec("curl_cffi") is not None
+            except Exception:
+                return False
+
         r = None
         used = "requests"
         try:
             r = _get_session()
-            if getattr(r, "status_code", 0) in ANTI:
+            if getattr(r, "status_code", 0) in ANTI and not _cffi_available():
+                # 没装 curl_cffi 就别硬试：否则真实原因（412 缺 Cookie / 403 过期）会被「No module named curl_cffi」盖掉
+                self.log("[直链] 普通请求被拒 HTTP %s（未安装 curl_cffi，无法换 Chrome 指纹重试）" % r.status_code)
+            elif getattr(r, "status_code", 0) in ANTI:
                 self.log("[直链] 普通请求被拒 HTTP %s，改用 Chrome 指纹重试…" % r.status_code)
                 try:
                     r.close()
@@ -18291,7 +18342,7 @@ class App:
             pass
         key = hashlib.md5(
             (e.get("url") or title or "v").encode("utf-8", "ignore")).hexdigest()[:12]
-        td = os.path.join(outdir, ".snifftmp", key)
+        td = os.path.join(snifftmp_root(outdir), ".snifftmp", key)
         if os.path.isdir(td):
             out.append(td)
         return out

@@ -35,7 +35,7 @@ _spec_dir = _os.path.dirname(_os.path.abspath(SPEC))
 # rpc_server 在 try/except 里 import，静态分析可能漏，显式补
 hiddenimports += ['rpc_server']
 # v3 内核全部模块显式带上（防运行时动态 import 漏包）
-hiddenimports += ['core', 'core.api', 'core.batch', 'core.bencode', 'core.checksum', 'core.clipboard', 'core.engine', 'core.errors', 'core.events', 'core.headless', 'core.linkdecode', 'core.livehls', 'core.naming', 'core.platform_util', 'core.postactions', 'core.queues', 'core.ratelimit', 'core.recognize', 'core.runtime', 'core.settings', 'core.speed', 'native_host']
+hiddenimports += ['core', 'core.api', 'core.batch', 'core.bencode', 'core.checksum', 'core.clipboard', 'core.engine', 'core.errors', 'core.events', 'core.headless', 'core.hls', 'core.sidecar', 'core.linkdecode', 'core.livehls', 'core.naming', 'core.platform_util', 'core.postactions', 'core.queues', 'core.ratelimit', 'core.recognize', 'core.runtime', 'core.settings', 'core.speed', 'native_host']
 
 # v3 提速引擎（core.speed → sdl_speed）在运行时按 speed_engine 设置 import；SOCKS 代理走 PySocks（可选）
 hiddenimports += ['core.speed', 'sdl_speed', 'sdl_speed.engine', 'sdl_speed.backends',

@@ -39,5 +39,12 @@ def _stub_tk():
 if __name__ == "__main__":
     _stub_tk()
     sys.path.insert(0, HERE)
+    _extra = os.environ.get("SDL_TEST_NETDISK_PROFILES")      # 仅测试：往网盘规则表前面塞 mock 规则（netdisk_e2e --v3 用）
+    if _extra:
+        import json
+        import netdisk_rules
+        for _p in reversed(json.loads(_extra)):
+            _p["dl_hosts"] = tuple(_p.get("dl_hosts") or ())
+            netdisk_rules.PROFILES.insert(0, _p)
     import sniffdl_core
     sys.exit(sniffdl_core.main(sys.argv[1:]))

@@ -4,19 +4,50 @@
   "version": "0.8.0",
   "description": "把浏览器里的下载接管给 SniffDL 看板娘：下载不再跳回桌面软件，直接在网页正中央弹 IDM 式「下载文件信息」确认卡 + 实时进度卡（速度/剩余/暂停/完成打开文件夹定位文件），常用位置网页内快选免切窗口、登录站 Cookie 自动补齐；网盘（夸克/百度/阿里/123/迅雷/蓝奏/115）下载必接管并原样带上浏览器真实请求头；视频页右上角自动浮嗅探篮（猫爪深度嗅探多清晰度/整页批量后台下、完成通知），弹窗记住最近嗅探页面，随六界看板娘换肤。",
   "author": "SniffDL",
-  "permissions": ["downloads", "cookies", "storage", "notifications", "contextMenus", "scripting", "tabs", "webRequest", "declarativeNetRequest", "webNavigation", "nativeMessaging"],
+  "permissions": [
+    "downloads",
+    "cookies",
+    "storage",
+    "notifications",
+    "contextMenus",
+    "scripting",
+    "tabs",
+    "webRequest",
+    "declarativeNetRequest",
+    "webNavigation",
+    "nativeMessaging"
+  ],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",
     "<all_urls>"
   ],
-  "background": { "service_worker": "background.js" },
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_start",
       "all_frames": true
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "page_hook.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
     }
   ],
   "action": {

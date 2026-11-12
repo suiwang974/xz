@@ -175,4 +175,28 @@ button.ghost:hover { border-color: var(--accent); background: color-mix(in srgb,
   color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent2));
 }
 
+/* 本页嗅探列表（分组 / 大小 / 一键推送） */
+#pageSniffCard { max-height: 340px; }
+#pageSniff .grp { font-size: 11px; font-weight: 800; color: var(--accent2); margin: 8px 0 2px; letter-spacing: .3px; }
+#pageSniff .grp .n { color: var(--ink-l); font-weight: 600; margin-left: 4px; }
+#pageSniff .row { font-size: 12px; padding: 6px 0; border-bottom: 1px dashed var(--line); display: flex; align-items: center; gap: 8px; }
+#pageSniff .row:last-child { border-bottom: none; }
+#pageSniff .row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pageSniff .row .sz { flex: none; color: var(--ink-l); font-size: 10.5px; }
+#pageSniff .row button { flex: none; width: auto; padding: 3px 10px; font-size: 11px; font-weight: 700; color: #fff; border: 0; border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2)); cursor: pointer; }
+#pageSniff .row button:disabled { opacity: .55; cursor: default; }
+#pageSniff .empty { color: var(--ink-l); text-align: center; font-size: 12px; padding: 12px 0; }
+
 .foot { text-align: center; font-size: 10px; color: var(--ink-l); margin-top: 12px; opacity: .8; }
+
+/* ---------- A16 高级 · 接管类型（折叠） ---------- */
+.adv { margin: 10px 0 4px; border: 1px dashed var(--line); border-radius: 10px; padding: 6px 10px; }
+.adv > summary { cursor: pointer; font-size: 12px; font-weight: 700; color: var(--ink-l); outline: none; }
+.adv[open] > summary { color: var(--accent2); margin-bottom: 6px; }
+.adv .advLabel { font-size: 11.5px; color: var(--ink-l); margin: 8px 0 4px; }
+.adv textarea { width: 100%; box-sizing: border-box; font: 11.5px/1.45 ui-monospace, Consolas, monospace; color: var(--ink);
+  background: var(--card); border: 1.5px solid var(--line); border-radius: 8px; padding: 6px 8px; resize: vertical; }
+.adv textarea:focus { border-color: var(--accent); outline: none; }
+.adv .advBtns { display: flex; justify-content: flex-end; margin-top: 4px; }
+.adv .switchRow.small .switchLabel { font-size: 11.5px; }

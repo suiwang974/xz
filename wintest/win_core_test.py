@@ -125,6 +125,12 @@ def t_bt_orphan_real():
     sys.path.insert(0, V3)
     os.chdir(V3)
     import video_downloader as V
+    # 前面步骤（ui_smoke 等）可能留着别的 SniffDL 内核在跑，它们会被当成「主人」→ 孤儿不成立。先清场并打印
+    for pid, n, cl in V.list_processes():
+        if pid != os.getpid() and n.lower().startswith(("python", "electron")) and V.is_sniffdl_owner_cmdline(cl):
+            print("清掉残留 SniffDL 进程 pid=%d %s" % (pid, cl[-160:]), flush=True)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+    time.sleep(1)
     app = V.App.__new__(V.App)
     logs = []
     app.log = lambda m: logs.append(m)

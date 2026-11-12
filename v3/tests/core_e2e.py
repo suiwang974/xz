@@ -824,6 +824,8 @@ def g_bothlimit():
             return bool(vb and vh), bb / el / 1024.0, hb / el / 1024.0, (hb + bb) / el / 1024.0
         vh = wait_done_bytes(hg, 256 * 1024, 20)
         ok0 = bool(vb and vh)
+        if not ok0:
+            print("  [%s] 诊断：BT=%s 直链=%s" % (tag, str(view(bg))[:300], str(view(hg))[:400]), flush=True)
         time.sleep(5)                           # 让 2s 重分摊与令牌桶先稳定
         try:
             peers = rpc("aria2.getPeers", bg)
@@ -846,7 +848,44 @@ def g_bothlimit():
         wait(lambda: view(bg) is None and view(hg) is None, 10)
         return ok0, db / el / 1024.0, dh / el / 1024.0, rate
 
+    def run_solo(tag, which):
+        """限速 limit_kb 下只跑一边（BT 或直链）：另一边空闲时这一边应能用到接近满额，且不超过 ×1.1。"""
+        base_settings()
+        setv(speed_limit_kbps=limit_kb, bt_tracker_auto=False, bt_dht=False, bt_lpd=False, bt_pex=False, max_concurrent=3)
+        for x in os.listdir(OUT):
+            if x.startswith(name) or x.startswith("bl_"):
+                try:
+                    os.remove(os.path.join(OUT, x))
+                except OSError:
+                    pass
+        if which == "bt":
+            r = rpc("sniffdl.task.add", {"url": tp, "dir": OUT})
+            g = r.get("gid") if isinstance(r, dict) else r
+            started = wait(lambda: (lambda x: x if x and x.get("kind") == "bt" and x["done"] > 0 else None)(view(g)), 25)
+        else:
+            fname = "bl_%s.bin" % tag
+            Files.add(fname, 96 * MB)
+            g = add(fname)
+            started = wait_done_bytes(g, 256 * 1024, 20)
+        time.sleep(4)
+        d0, t0 = (view(g) or {}).get("done", 0), time.time()
+        time.sleep(8)
+        d1, t1 = (view(g) or {}).get("done", 0), time.time()
+        try:
+            remove(g, True, True)
+        except Exception:
+            pass
+        wait(lambda: view(g) is None, 10)
+        rate = (d1 - d0) / (t1 - t0) / 1024.0
+        print("  [%s] 单边 %s：%.0f KB/s" % (tag, which, rate), flush=True)
+        return bool(started), rate
+
     try:
+        # 单边空闲用例放在合并用例之前：BT 单边刚删，合并用例立刻再加同一个种子，覆盖「删后立刻重加同一种子」（曾被旧任务线程抢先摘除而变成死任务）
+        for _tag, _which in (("solo_bt", "bt"), ("solo_http", "http")):
+            okS, rS = run_solo(_tag, _which)
+            check("单边空闲（只跑%s）：限速 %d 下能用到 %.0f KB/s ≥ 限速 60%% 且 ≤ ×1.1" % ("BT" if _which == "bt" else "直链", limit_kb, rS),
+                  okS and limit_kb * 0.6 <= rS <= limit_kb * 1.1, (okS, rS))
         ok0, bkb, hkb, tot = run_case("lim", limit_kb)
         TIMES["bothlimit_total_KBps"] = round(tot)
         check("真 BT 与真直链都已开始下载", ok0)
@@ -1007,9 +1046,54 @@ def g_ytclean():
     base_settings()
 
 
+def g_ytinc():
+    """yt-dlp 任务也听 incomplete_dir：半成品在未完成目录的 .snifftmp 下，保存位置不见临时文件；完成后成品在保存位置、
+    未完成目录无残留；删除任务 + cancel_cleanup=always 时未完成目录里的半成品也清。"""
+    base_settings()
+    shutil.rmtree(INC, ignore_errors=True)
+    setv(incomplete_dir=INC)
+    tag = "ytinc1"
+    Files.add(tag, 12 * MB, ctype="video/mp4", rate=1 * MB)
+    r = rpc("sniffdl.task.add", {"url": "http://127.0.0.1:%d/f/%s" % (FPORT[0], tag), "dir": OUT})
+    gid = r.get("gid") if isinstance(r, dict) else r
+
+    def inc_part():
+        for f in _walk_files(INC):
+            if ".part" in f and os.path.getsize(os.path.join(INC, f)) > 512 * 1024:
+                return f
+    pf = wait(inc_part, 40)
+    v = view(gid)
+    out_mid = _walk_files(OUT)
+    check("yt-dlp+incomplete_dir：任务是 video、半成品落在未完成目录 %s" % pf, bool(v) and v.get("kind") == "video" and bool(pf) and ".snifftmp" in (pf or ""), (v and v.get("kind"), _walk_files(INC)))
+    check("yt-dlp+incomplete_dir：下载中保存位置没有临时文件（%s）" % out_mid, not [x for x in out_mid if ".part" in x or ".snifftmp" in x], out_mid)
+    v = wait_status(gid, ("complete", "error"), 60)
+    time.sleep(1)
+    out_end, inc_end = _walk_files(OUT), [x for x in _walk_files(INC) if not x.endswith("/")]
+    done = [x for x in out_end if x.startswith(tag) and ".part" not in x and ".snifftmp" not in x]
+    check("yt-dlp+incomplete_dir：完成，成品在保存位置 %s" % done, bool(v) and v["status"] == "complete" and len(done) == 1
+          and sha_file(os.path.join(OUT, done[0])) == Files.sha[tag], (v and (v["status"], v.get("msg")), out_end))
+    check("yt-dlp+incomplete_dir：完成后未完成目录无文件残留（%s）" % inc_end, inc_end == [], inc_end)
+    shutil.rmtree(OUT, ignore_errors=True)
+    os.makedirs(OUT, exist_ok=True)
+    # 删除任务 + cancel_cleanup=always：未完成目录里的半成品清掉
+    setv(incomplete_dir=INC, cancel_cleanup="always")
+    tag = "ytinc2"
+    Files.add(tag, 40 * MB, ctype="video/mp4", rate=50 * 1024)
+    r = rpc("sniffdl.task.add", {"url": "http://127.0.0.1:%d/f/%s" % (FPORT[0], tag), "dir": OUT})
+    gid = r.get("gid") if isinstance(r, dict) else r
+    pf = wait(inc_part, 40)
+    before = _walk_files(INC)
+    remove(gid, False)
+    wait(lambda: view(gid) is None, 10)
+    time.sleep(5)
+    check("yt-dlp+incomplete_dir+cancel_cleanup=always：删除后未完成目录半成品已清（删前 %s）" % before, bool(pf) and _walk_files(INC) == [], (before, _walk_files(INC)))
+    base_settings()
+    shutil.rmtree(INC, ignore_errors=True)
+
+
 GROUPS = [("modes", g_modes), ("fallback", g_fallback), ("limit", g_limit), ("pause", g_pause),
           ("cancel", g_cancel), ("incdir", g_incdir), ("rpcopt", g_rpcopt), ("linkswift", g_linkswift), ("diskfull", g_diskfull), ("btclean", g_btclean),
-          ("conncap", g_conncap), ("bothlimit", g_bothlimit), ("magnet", g_magnet), ("ytclean", g_ytclean)]
+          ("conncap", g_conncap), ("bothlimit", g_bothlimit), ("magnet", g_magnet), ("ytclean", g_ytclean), ("ytinc", g_ytinc)]
 
 
 def main(argv):
@@ -1036,7 +1120,10 @@ def main(argv):
     for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
         env.pop(k, None)              # 本地服务器测试：aria2c 不能被系统代理带走
     env.pop("DISPLAY", None)
-    core = subprocess.Popen([sys.executable, os.path.join(HERE, "tests", "ui_smoke_core.py"), "--data-dir", DATA,
+    _exe = os.environ.get("SDL_CORE_EXE")      # 设了就对 PyInstaller 冻结产物跑同一套用例
+    if _exe:
+        env.pop("PYTHONPATH", None)
+    core = subprocess.Popen(([_exe] if _exe else [sys.executable, os.path.join(HERE, "tests", "ui_smoke_core.py")]) + ["--data-dir", DATA,
                              "--port", str(PORT[0]), "--runtime", os.path.join(DATA, "runtime.json"),
                              "--ui-token", TOKEN],
                             cwd=HERE, env=env, stdout=open(os.path.join(DATA, "core.out"), "w"),
