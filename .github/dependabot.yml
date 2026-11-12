@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /v3/pet_electron/app
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /wintest
+    schedule:
+      interval: weekly
