@@ -57,12 +57,23 @@ def read(path, max_age=None):
 def _alive(pid):
     try:
         if os.name == "nt":
+            # 只 OpenProcess 不够：进程已退出但还有人攥着它的句柄（比如拉起它的宿主/测试进程的 Popen）时
+            # OpenProcess 照样成功 → 看门狗永远以为父进程活着。必须再查退出码是不是 STILL_ACTIVE(259)。
             import ctypes
-            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            from ctypes import wintypes
+            k = ctypes.windll.kernel32
+            k.OpenProcess.restype = wintypes.HANDLE
+            k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            h = k.OpenProcess(0x1000, False, int(pid))      # PROCESS_QUERY_LIMITED_INFORMATION
             if not h:
                 return False
-            ctypes.windll.kernel32.CloseHandle(h)
-            return True
+            try:
+                code = wintypes.DWORD(0)
+                if not k.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return True                              # 查不到退出码：保守当活着
+                return code.value == 259                     # STILL_ACTIVE
+            finally:
+                k.CloseHandle(h)
         os.kill(pid, 0)
         return True
     except Exception:

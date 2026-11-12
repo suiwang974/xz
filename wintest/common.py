@@ -29,7 +29,7 @@ class Results:
 
     def ok(self, name, cond, detail=""):
         self.items.append({"name": name, "ok": bool(cond), "detail": str(detail)[:1500]})
-        print(("PASS " if cond else "FAIL ") + name + ("  " + str(detail)[:600] if detail else ""), flush=True)
+        print(("PASS " if cond else "FAIL ") + name + ("  " + str(detail)[:600 if cond else 1500] if detail else ""), flush=True)
         return cond
 
     def skip(self, name, detail=""):
@@ -67,9 +67,14 @@ def wait(fn, timeout, step=0.25):
 
 
 def rpc(port, method, *params, token=""):
+    # 没有令牌就不带 X-SniffDL-Token 头：内核对「带了令牌头却不对（含空串）」一律 401
+    # （防网页借预检放行的这个头绕过 CORS，见 rpc_server.do_POST），空头会让 sniffdl.ping 握手永远失败。
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["X-SniffDL-Token"] = token
     req = urllib.request.Request("http://127.0.0.1:%d/jsonrpc" % int(port),
                                  data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(),
-                                 headers={"Content-Type": "application/json", "X-SniffDL-Token": token})
+                                 headers=headers)
     op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     return json.loads(op.open(req, timeout=8).read().decode("utf-8"))
 

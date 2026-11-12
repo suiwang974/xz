@@ -234,7 +234,7 @@ function rpcTo(info, method, params, timeout) {
   return new Promise((resolve, reject) => {
     const data = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params: params || [] }));
     const req = http.request({ host: '127.0.0.1', port: info.port, path: '/jsonrpc', method: 'POST', timeout: timeout || 4000,
-      headers: { 'Content-Type': 'application/json', 'Content-Length': data.length, 'X-SniffDL-Token': info.ui_token || '' } }, (res) => {
+      headers: Object.assign({ 'Content-Type': 'application/json', 'Content-Length': data.length }, info.ui_token ? { 'X-SniffDL-Token': info.ui_token } : {}) }, (res) => {
       let b = ''; res.setEncoding('utf8'); res.on('data', (c) => { b += c; });
       res.on('end', () => { try { const j = JSON.parse(b); if (j.error) reject(new Error(j.error.message || 'rpc')); else resolve(j.result); } catch (e) { reject(e); } });
     });

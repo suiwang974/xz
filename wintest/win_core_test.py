@@ -132,7 +132,18 @@ def t_bt_orphan_real():
     app._h2 = {"proc": None}
     try:
         got = app._bt_orphan_pids(root)
-        R.ok("BT1 真 PowerShell/CIM 只认出带 .snifftdl 的孤儿（不误伤 Motrix --bt-*）", got == [orphan.pid], {"got": got, "orphan": orphan.pid, "decoy": decoy.pid})
+        diag = {"got": got, "orphan": orphan.pid, "decoy": decoy.pid}
+        if got != [orphan.pid]:            # 只在失败时附诊断：进程表 / 每个 aria2c 的判定原因 / PowerShell 返回
+            try:
+                from core.runtime import _alive as _al
+                pl = V.list_processes()
+                diag["ps"] = dict(getattr(V, "_LIST_PROC_DIAG", {}))
+                diag["aria2c"] = [(pid, cl[-120:], V.aria2_orphan_verdict(cl, _al, 0, [], [], pid))
+                                  for pid, n, cl in pl if n.lower().startswith("aria2c")]
+                diag["owners"] = [(pid, cl[-120:]) for pid, n, cl in pl if V.is_sniffdl_owner_cmdline(cl)]
+            except Exception as e:
+                diag["diag_err"] = repr(e)
+        R.ok("BT1 真 PowerShell/CIM 只认出带 .snifftdl 的孤儿（不误伤 Motrix --bt-*）", got == [orphan.pid], diag)
         gone = app._bt_reap_orphans(root)
         time.sleep(1)
         R.ok("BT2 真 taskkill 收掉孤儿", gone == [orphan.pid] and orphan.poll() is not None, {"gone": gone, "logs": logs[-2:]})

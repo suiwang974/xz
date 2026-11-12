@@ -7498,20 +7498,38 @@ def aria2_orphan_verdict(cmdline, alive, runtime_pid=0, owner_pids=(), my_pids=(
     return True, "无主"
 
 
+_LIST_PROC_DIAG = {}      # 最近一次 list_processes 的诊断（rc/输出长度/stderr/异常），实机排障用
+
+
 def list_processes():
     """[(pid, name, cmdline)]：Windows 用 CIM，其它系统读 /proc。失败返回空表。"""
     out = []
     try:
         if os.name == "nt":
-            ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'aria2c|SniffDL|python|electron' } | "
-                  "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress")
-            r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
-                               timeout=25, creationflags=0x08000000)
-            data = json.loads(r.stdout or "[]")
+            # 输出强制 UTF-8 + 按字节自己解码：Windows PowerShell 5.1 写管道用 OEM 代码页（cp437/cp936），
+            # Python text=True 却按 ANSI 代码页解码 → 中文用户名路径变 ? 甚至整段解码异常 → 进程表空、孤儿永远认不出。
+            # Get-CimInstance 失败（WMI 服务慢/被策略禁用）再退 Get-WmiObject；整体超时放宽到 60s（首次冷启动 WMI 很慢）。
+            ps = ("$ErrorActionPreference='Stop';"
+                  "try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{};$OutputEncoding=[System.Text.Encoding]::UTF8;"
+                  "try{$p=Get-CimInstance -ClassName Win32_Process}catch{$p=Get-WmiObject -Class Win32_Process};"
+                  "@($p | Where-Object { $_.Name -match 'aria2c|SniffDL|python|electron' } | "
+                  "Select-Object ProcessId,Name,CommandLine) | ConvertTo-Json -Compress -Depth 2")
+            r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                                "-Command", ps], capture_output=True, timeout=60, creationflags=0x08000000)
+            raw = r.stdout or b""
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", "replace")
+            raw = raw.lstrip("\ufeff").strip()
+            _LIST_PROC_DIAG.update(rc=getattr(r, "returncode", None), out_len=len(raw),
+                                   err=(r.stderr.decode("utf-8", "replace") if isinstance(r.stderr, bytes)
+                                        else str(r.stderr or ""))[-400:])
+            i = min([x for x in (raw.find("["), raw.find("{")) if x >= 0] or [0])
+            data = json.loads(raw[i:] or "[]") if raw else []
             if isinstance(data, dict):
                 data = [data]
             for d in data or []:
                 out.append((int(d.get("ProcessId") or 0), str(d.get("Name") or ""), str(d.get("CommandLine") or "")))
+            _LIST_PROC_DIAG["n"] = len(out)
             return out
         for p in os.listdir("/proc"):
             if not p.isdigit():
@@ -7524,7 +7542,8 @@ def list_processes():
                 out.append((int(p), os.path.basename(parts[0]), " ".join(parts)))
             except Exception:
                 continue
-    except Exception:
+    except Exception as e:
+        _LIST_PROC_DIAG["exc"] = repr(e)[:300]
         return []
     return out
 
