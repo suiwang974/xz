@@ -67,11 +67,25 @@ const base = () => `http://127.0.0.1:${conn.port}`;
 let rid = 0;
 export async function rpc(method, ...params) {
   if (!conn) throw new Error('未连接内核');
-  const r = await fetch(base() + '/jsonrpc', {
+  const once = () => fetch(base() + '/jsonrpc', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-SniffDL-Token': conn.token },
     body: JSON.stringify({ jsonrpc: '2.0', id: ++rid, method, params }),
   });
+  let r;
+  try { r = await once(); } catch (e) { r = null; }
+  // 内核被宿主重启后令牌/端口都会换（Windows 实测 A26：旧令牌 401、旧端口连接被重置）：
+  // 重新问宿主要新地址，换了就重试一次，界面不该因此冒红字。
+  if (!r || r.status === 401) {
+    let c = null;
+    try { c = await discover(); } catch (e) {}
+    if (c?.port && (c.token !== conn.token || c.port !== conn.port)) {
+      conn = c;
+      r = await once();
+    } else if (!r) {
+      throw new Error('连不上内核');
+    }
+  }
   const j = await r.json();
   if (j.error) { const e = new Error(j.error.message || 'RPC 错误'); e.code = j.error.code; throw e; }
   return j.result;

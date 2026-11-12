@@ -89,6 +89,14 @@ jobs:
         continue-on-error: true
         run: python wintest/run.py bt_orphan_mock python v3/tools/bt_orphan_mock_test.py
 
+      - name: 3b core_exit_rt (Windows 看门狗/stdin 退出时 runtime.json 清理)
+        continue-on-error: true
+        run: python wintest/run.py core_exit_rt python v3/tests/core_exit_rt_test.py
+
+      - name: 3c ui_token_refresh (内核重启换令牌后 rpc 自动重取)
+        continue-on-error: true
+        run: python wintest/run.py ui_token_refresh node v3/tests/ui_token_refresh_test.js
+
       - name: 4 ui_smoke (real tk, Playwright Chromium)
         continue-on-error: true
         run: |

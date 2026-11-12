@@ -76,7 +76,18 @@ def main(argv=None):
 
     stop = threading.Event()
 
+    def _drop_rt():
+        # Windows 实测 B8：宿主被强杀后内核走看门狗自退，后面的完整 shutdown 里若被谁掐断，runtime.json 就留下了
+        # → 下次启动被误认成「内核还活着」。退出信号一到就先把自己的 runtime.json 删掉（只删 pid 是自己的）。
+        try:
+            info = RT.read(eng.runtime_path)
+            if not info or int(info.get("pid") or 0) == os.getpid():
+                RT.remove(eng.runtime_path)
+        except Exception:
+            pass
+
     def _bye(*_):
+        _drop_rt()
         stop.set()
     if a.watch_stdin:
         def _w():
@@ -105,6 +116,7 @@ def main(argv=None):
     while not stop.is_set() and not eng._stop.is_set():
         stop.wait(0.5)
     eng.shutdown()
+    _drop_rt()
     return 0
 
 
