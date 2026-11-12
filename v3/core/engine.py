@@ -43,6 +43,7 @@ from . import recognize as RG
 from . import bencode as BC
 from . import clipboard as CB
 from . import livehls as LIVE
+from . import hls as HLS
 from . import runtime as RT
 from . import speed as SPD
 
@@ -570,6 +571,8 @@ class Engine(V.App):
             self._hook("start", t)
             if t.get("live"):
                 self._run_live(t)
+            elif self._hls_wanted(t) and self._run_hls(t):
+                pass
             else:
                 super()._rpc_run_task(gid)
         finally:
@@ -1237,6 +1240,11 @@ class Engine(V.App):
                 sel = None
         if sel:
             opts["select-file"] = ",".join(str(int(i)) for i in sel)
+        elif (uri or "").lower().startswith("magnet:") and any(
+                x.strip() for x in (S.get(c, "bt_exclude") or "").splitlines()):
+            # 磁力：元数据到手前不知道文件清单；让 aria2 取完元数据后把真下载先暂停，
+            # _bt_on_followed 按 bt_exclude 改好 select-file 再放行（不然广告文件会被先下一截）
+            opts["pause-metadata"] = "true"
         tr = self._tracker_list()
         if tr:
             opts["bt-tracker"] = tr
@@ -1244,6 +1252,31 @@ class Engine(V.App):
         if lim:
             opts["max-download-limit"] = "%dK" % lim
         return super()._bt_add(uri, opts, headers)
+
+    def _bt_on_followed(self, t, new_gid):
+        """磁力元数据已取到：按 bt_exclude 给真下载（new_gid）定 select-file，然后放行（它是 pause-metadata 暂停着的）。"""
+        paused = False
+        try:
+            st = self._bt_rpc("aria2.tellStatus", [new_gid, ["status", "files", "dir"]]) or {}
+            paused = st.get("status") == "paused"
+            d = (st.get("dir") or "").replace("\\", "/").rstrip("/") + "/"
+            files = []
+            for f in (st.get("files") or []):
+                pth = (f.get("path") or "").replace("\\", "/")
+                files.append({"index": int(f.get("index") or 0), "path": pth[len(d):] if pth.startswith(d) else pth})
+            if t.get("bt_select") or not files:
+                return
+            sel = self._bt_auto_select(files)
+            if sel and len(sel) < len(files):
+                self._bt_rpc("aria2.changeOption", [new_gid, {"select-file": ",".join(str(i) for i in sel)}])
+                t["bt_select"] = sel
+                self.log("[BT] 磁力元数据到手：自动不勾选 %d 个广告/填充文件" % (len(files) - len(sel)))
+        finally:
+            if paused:
+                try:
+                    self._bt_rpc("aria2.unpause", [new_gid])
+                except Exception:
+                    pass
 
     def _bt_auto_select(self, files):
         pats = [p.strip().lower() for p in (S.get(self.cfg, "bt_exclude") or "").splitlines() if p.strip()]
@@ -1345,6 +1378,100 @@ class Engine(V.App):
                 PU.reveal_path(cand)
                 return {"ok": True, "path": cand}
         return {"ok": False, "error": "还没拿到种子元数据（或已关闭「存一份 .torrent」）"}
+
+    # ---------------- 点播 m3u8 / mpd：内置分段并发下载（A17）
+    def _hls_wanted(self, t):
+        """点播 m3u8/mpd 且开关打开 → 走内置分段下载；t["_hls_off"] = 本任务已回落过。"""
+        if t.get("_hls_off") or not S.get(self.cfg, "hls_native"):
+            return False
+        try:
+            path = urlparse(t.get("uri") or "").path.lower()
+        except Exception:
+            return False
+        return path.endswith(".m3u8") or path.endswith(".mpd")
+
+    def _hls_height(self, t):
+        """画质上限：任务的 format 写 720 / 720p / h720 → 720；否则取设置 hls_max_height（0 = 不限）。"""
+        import re as _re
+        m = _re.fullmatch(r"\s*h?(\d{3,4})p?\s*", str(t.get("format") or ""), _re.I)
+        if m:
+            return int(m.group(1))
+        return int(S.get(self.cfg, "hls_max_height") or 0)
+
+    def _run_hls(self, t):
+        """返回 True = 已处理（成功/失败/暂停都算）；False = 不支持（直播/SAMPLE-AES/DRM），调用方回落原路径。"""
+        d = t.get("dir") or self.cfg.get("outdir") or V.DEFAULT_OUTDIR
+        uri = t["uri"]
+        name = t.get("name") or ""
+        stem = os.path.splitext(name)[0] if name else os.path.splitext(os.path.basename(urlparse(uri).path))[0]
+        stem = V.safe_name(stem or "video_%s" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+        out_path = os.path.join(d, stem + ".ts")
+        c = str(t.get("conns") or S.get(self.cfg, "task_conns") or "自动")
+        conns = max(1, min(32, int(c))) if c.isdigit() else 8
+        with self._rpc_lock:
+            t["status"] = "active"
+            t["start_ts"] = time.time()
+            t["statusMessage"] = "分段下载 m3u8/mpd…"
+        self._pet_react("busy")
+        gid = t["gid"]
+
+        def throttle(n):
+            a = int(t.get("limit_kbps") or 0) * 1024
+            if a:
+                b = self._buckets.get(gid)
+                if b is None or b.rate != a:
+                    b = self._buckets[gid] = RL.TokenBucket(a)
+                b.consume(n, cancel=lambda: t.get("cancel"))
+            if self.gbucket.rate:
+                self.gbucket.consume(n, cancel=lambda: t.get("cancel"))
+
+        def prog(p):
+            with self._rpc_lock:
+                t["downloadedLength"] = int(p.get("downloaded_bytes") or 0)
+                t["downloadSpeed"] = int(p.get("speed") or 0)
+            self._qmem_mark()
+
+        try:
+            hdr = dict(t.get("headers") or {})
+            r = HLS.download(uri, out_path, V.SESSION, headers=hdr, conns=conns,
+                             max_height=self._hls_height(t),
+                             cancel=lambda: t.get("cancel"), prog=prog, log=self.log, throttle=throttle)
+        except HLS.Unsupported as e:
+            self.log("[HLS] 内置下载不处理（%s）→ 回落原路径" % str(e)[:80])
+            t["_hls_off"] = True
+            return False
+        except HLS.Cancelled:
+            if t.get("purge"):
+                try:
+                    import glob
+                    for pd in glob.glob(glob.escape(os.path.join(d, stem)) + "*.parts"):
+                        shutil.rmtree(pd, ignore_errors=True)
+                except Exception:
+                    pass
+            with self._rpc_lock:
+                t["status"] = "paused"
+                t["downloadSpeed"] = 0
+            self._qmem_mark(force=True)
+            return True
+        except Exception as e:
+            self._fail(t, "m3u8/mpd 下载失败：%s" % str(e)[:150])
+            self._rpc_fire_mascot(False)
+            return True
+        fp = r["path"]
+        with self._rpc_lock:
+            t["path"] = fp
+            t["name"] = os.path.basename(fp)
+            t["totalLength"] = t["downloadedLength"] = os.path.getsize(fp)
+            t["downloadSpeed"] = 0
+            t["status"] = "complete"
+            t["statusMessage"] = ("已合并 %d 个分片" % r["segments"]) if r.get("muxed") or not r.get("audio_path") else \
+                "已下载 %d 个分片；音轨单独保存（没有 ffmpeg 无法合并）：%s" % (r["segments"], os.path.basename(r["audio_path"]))
+            if r.get("audio_path"):
+                t["extra_files"] = [r["audio_path"]]
+            t["done_ts"] = time.time()
+        self._qmem_mark(force=True)
+        self._rpc_fire_mascot(True)
+        return True
 
     # ---------------- 直播录制
     def _run_live(self, t):

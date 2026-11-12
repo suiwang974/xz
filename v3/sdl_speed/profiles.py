@@ -1,6 +1,6 @@
 """每主机的连接策略。
 
-默认：起始 8 连接、自动上限 64；已知的大型 CDN（“快主机”）上限 128（A15，2026-11-12：原 32/64）。
+默认：起始 16 连接、自动上限 64；已知的大型 CDN（“快主机”）上限 128（A15，2026-11-12：原 32/64）。
 任何来源（resolver / override / 调用方 profile）给的上限都会被 clamp 到 HARD_MAX=128。
 自动模式下实际用多少路由 engine._adapt 按实测吞吐决定（每加一批提升 <5% 就停），不是一上来就开满。
 SniffDL 可以通过 set_resolver() 接入 netdisk_rules.match_profile，把网盘的防封上限
@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
-DEFAULT_START = 8
+DEFAULT_START = 16         # A18：开局直接 16 路（与 aria2 -x16 同起点；原 8 路在高延迟场景慢于 aria2 35%）
 DEFAULT_MAX = 64          # 自动模式默认上限（A15：32→64）
 FAST_MAX = 128            # 快主机自动上限（A15：64→128）
 HARD_MAX = 128            # 绝对上限：设置「最大连接数」最高档

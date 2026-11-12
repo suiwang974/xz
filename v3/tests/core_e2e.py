@@ -133,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
             st["asked"] += z - a + 1          # 客户端要的字节数（不受服务器预先塞进 socket 缓冲区的影响）
             st.setdefault("starts", []).append(a)
         self.send_response(206 if partial else 200)
-        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Type", fl.get("ctype") or "application/octet-stream")
         self.send_header("Content-Length", str(z - a + 1))
         if not fl.get("norange"):
             self.send_header("Accept-Ranges", "bytes")
@@ -870,9 +870,146 @@ def g_bothlimit():
 
 
 
+def g_magnet():
+    """磁力链接 + bt_exclude（A5）：本地 aria2c 做种一个两文件种子（movie.bin + 广告.url）、本地 HTTP tracker；
+    经 magnet: 链接添加，元数据到达后广告文件按 bt_exclude 不下载，正片下完；对照：bt_exclude 为空时两个都下。"""
+    import core_unit as CU
+    sd = os.path.join(DATA, "mseed")
+    shutil.rmtree(sd, ignore_errors=True)
+    os.makedirs(os.path.join(sd, "pack"), exist_ok=True)
+    plen = 64 * 1024
+    rnd = random.Random("magnet")
+    movie, ad = rnd.randbytes(5 * plen), rnd.randbytes(plen)       # 文件边界与分片对齐：广告文件不与正片共用分片
+    with open(os.path.join(sd, "pack", "movie.bin"), "wb") as f:
+        f.write(movie)
+    with open(os.path.join(sd, "pack", "ad.url"), "wb") as f:
+        f.write(ad)
+    data = movie + ad
+    pieces = b"".join(hashlib.sha1(data[i:i + plen]).digest() for i in range(0, len(data), plen))
+    info = {"name": "pack", "piece length": plen, "pieces": pieces,
+            "files": [{"length": len(movie), "path": ["movie.bin"]}, {"length": len(ad), "path": ["ad.url"]}]}
+    ih = hashlib.sha1(CU.benc(info)).hexdigest()
+    seed_port, trk_port = free_port(), free_port()
+
+    class Trk(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            body = CU.benc({"interval": 30, "peers": socket.inet_aton("127.0.0.1") + struct.pack(">H", seed_port)})
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+    trk = QuietServer(("127.0.0.1", trk_port), Trk)
+    threading.Thread(target=trk.serve_forever, daemon=True).start()
+    ann = "http://127.0.0.1:%d/announce" % trk_port
+    tp = os.path.join(sd, "pack.torrent")
+    with open(tp, "wb") as f:
+        f.write(CU.benc({"announce": ann, "info": info}))
+    seeder = subprocess.Popen(["aria2c", "--no-conf", "--enable-rpc=false", "--enable-dht=false", "--bt-enable-lpd=false",
+                               "--enable-peer-exchange=false", "--listen-port=%d" % seed_port, "-V", "--seed-ratio=0",
+                               "--seed-time=600", "--bt-seed-unverified=false", "--allow-overwrite=true",
+                               "-d", sd, tp], stdout=open(os.path.join(sd, "seed.log"), "w"), stderr=subprocess.STDOUT)
+    time.sleep(2.5)
+    magnet = "magnet:?xt=urn:btih:%s&dn=pack&tr=%s" % (ih, urllib.parse.quote(ann, safe=""))
+    try:
+        for tag, excl, want_ad in (("排除 *.url", "*.url", False), ("规则为空", "", True)):
+            base_settings()
+            setv(bt_exclude=excl, bt_tracker_auto=False, bt_dht=False, bt_lpd=False, bt_pex=False)
+            shutil.rmtree(os.path.join(OUT, "pack"), ignore_errors=True)
+            r = rpc("sniffdl.task.add", {"url": magnet, "dir": OUT})
+            gid = r.get("gid") if isinstance(r, dict) else r
+            v = wait(lambda: (lambda x: x if x and x["status"] == "complete" else None)(view(gid)), 45)
+            check("磁力 [%s]：任务走 BT 并下完（元数据→跟进）" % tag, bool(v) and v.get("kind") == "bt", v)
+            time.sleep(1.0)
+            mp, ap = os.path.join(OUT, "pack", "movie.bin"), os.path.join(OUT, "pack", "ad.url")
+            check("磁力 [%s]：正片 movie.bin 完整（sha 一致）" % tag,
+                  os.path.isfile(mp) and open(mp, "rb").read() == movie)
+            has_ad = os.path.exists(ap) and os.path.getsize(ap) > 0
+            check("磁力 [%s]：广告文件 ad.url %s" % (tag, "已下载" if want_ad else "未下载"), has_ad == want_ad,
+                  (os.path.exists(ap), os.path.getsize(ap) if os.path.exists(ap) else None))
+            try:
+                remove(gid, True, True)
+            except Exception:
+                pass
+            wait(lambda: view(gid) is None, 10)
+    finally:
+        try:
+            seeder.terminate()
+            seeder.wait(5)
+        except Exception:
+            seeder.kill()
+        trk.shutdown()
+        base_settings()
+
+
+def _walk_files(d):
+    r = []
+    for a, _, fs in os.walk(d):
+        for f in fs:
+            r.append(os.path.relpath(os.path.join(a, f), d))
+    return sorted(r)
+
+
+def g_ytclean():
+    """yt-dlp 任务（无后缀视频直链 → 交给 yt-dlp 通用提取器，再经 aria2c 外部下载器）删除时按 cancel_cleanup 清理：
+    半成品在 .snifftmp/<key>/ 下（.part、.part.aria2）。"""
+    cases = [("always", None, True), ("never", None, False), ("ask", True, True), ("ask", False, False)]
+    for pol, a3, cleaned in cases:
+        base_settings()
+        setv(cancel_cleanup=pol)
+        tag = "ytc%s%s" % (pol, {None: "x", True: "y", False: "n"}[a3])
+        Files.add(tag, 40 * MB, ctype="video/mp4", rate=50 * 1024)
+        r = rpc("sniffdl.task.add", {"url": "http://127.0.0.1:%d/f/%s" % (FPORT[0], tag), "dir": OUT})
+        gid = r.get("gid") if isinstance(r, dict) else r
+
+        def part_size():
+            for f in _walk_files(OUT):
+                if f.endswith(".part") and os.path.getsize(os.path.join(OUT, f)) > 1 * MB:
+                    return f
+        pf = wait(part_size, 40)
+        v = view(gid)
+        before = _walk_files(OUT)
+        t2 = "yt-dlp 删除 cancel_cleanup=%s%s" % (pol, "" if a3 is None else " 第3参=%s" % a3)
+        check(t2 + "：任务是 video 且已落半成品 %s" % before, bool(v) and v.get("kind") == "video" and bool(pf), (v, before))
+        remove(gid, False, a3)
+        wait(lambda: view(gid) is None, 10)
+        time.sleep(5)
+        left = _walk_files(OUT)
+        if cleaned:
+            check(t2 + "：半成品已清（剩 %s）" % left, left == [], left)
+        else:
+            check(t2 + "：半成品保留（%s）" % left, any(x.endswith(".part") for x in left), left)
+        shutil.rmtree(OUT, ignore_errors=True)
+        os.makedirs(OUT, exist_ok=True)
+    # 暂停：yt-dlp+aria2c 任务暂停后应是 paused（不是 error）、aria2c 外部下载器真停、.part 保留可续
+    base_settings()
+    Files.add("ytcpause", 40 * MB, ctype="video/mp4", rate=50 * 1024)
+    r = rpc("sniffdl.task.add", {"url": "http://127.0.0.1:%d/f/ytcpause" % FPORT[0], "dir": OUT})
+    gid = r.get("gid") if isinstance(r, dict) else r
+    wait(lambda: [f for f in _walk_files(OUT) if f.endswith(".part") and os.path.getsize(os.path.join(OUT, f)) > 1 * MB], 40)
+    rpc("aria2.pause", gid)
+    v = wait_status(gid, ("paused", "error"), 15)
+    time.sleep(3)
+
+    def ar_alive():
+        out = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout
+        return [l for l in out.splitlines() if "aria2c" in l and OUT + "/.snifftmp" in l]
+    sz1 = sum(os.path.getsize(os.path.join(OUT, f)) for f in _walk_files(OUT))
+    time.sleep(3)
+    sz2 = sum(os.path.getsize(os.path.join(OUT, f)) for f in _walk_files(OUT))
+    check("yt-dlp 任务暂停：状态 paused（不是 error）", bool(v) and v["status"] == "paused", v and (v["status"], v.get("msg"), v.get("note")))
+    check("yt-dlp 任务暂停：aria2c 外部下载器已停（无残留进程）", not ar_alive(), ar_alive())
+    check("yt-dlp 任务暂停：半成品保留且不再增长（%d → %d）" % (sz1, sz2), sz1 > 0 and sz1 == sz2, (sz1, sz2))
+    remove(gid, True, True)
+    wait(lambda: view(gid) is None, 10)
+    base_settings()
+
+
 GROUPS = [("modes", g_modes), ("fallback", g_fallback), ("limit", g_limit), ("pause", g_pause),
           ("cancel", g_cancel), ("incdir", g_incdir), ("rpcopt", g_rpcopt), ("linkswift", g_linkswift), ("diskfull", g_diskfull), ("btclean", g_btclean),
-          ("conncap", g_conncap), ("bothlimit", g_bothlimit)]
+          ("conncap", g_conncap), ("bothlimit", g_bothlimit), ("magnet", g_magnet), ("ytclean", g_ytclean)]
 
 
 def main(argv):

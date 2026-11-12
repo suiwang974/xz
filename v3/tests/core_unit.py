@@ -183,8 +183,64 @@ def t_platform_util():
           and all(d.get("default") == "" for d in S.public_schema() if d.get("secret")))
 
 
+def t_bt_exclude():
+    """bt_exclude 通配排除（torrent 与磁力共用 _bt_auto_select）+ 磁力元数据后的 _bt_on_followed（假 aria2 RPC）。"""
+    os.environ["SNIFFDL_DRYRUN_OS"] = "1"
+    import types
+    sys.path.insert(0, os.path.join(HERE, "tests"))
+    import ui_smoke_core
+    ui_smoke_core._stub_tk()                 # 沙箱没有 libtk：进程内导入引擎前先换成桩
+    from core import engine as E
+    cls = [v for v in vars(E).values() if isinstance(v, type) and hasattr(v, "_bt_on_followed")][0]
+    fs = [{"index": 1, "path": "a/movie.mkv"}, {"index": 2, "path": "a/广告.url"}, {"index": 3, "path": "a/Readme.HTML"},
+          {"index": 4, "path": "a/_____padding_file_1"}]
+
+    def mk(ex, status="paused", files=None):
+        calls = []
+        o = types.SimpleNamespace(cfg={"bt_exclude": ex}, calls=calls, logs=[])
+        o._bt_auto_select = lambda f: cls._bt_auto_select(o, f)
+        o.log = lambda m: o.logs.append(m)
+
+        def rpc_(m, a):
+            calls.append((m, a))
+            if m == "aria2.tellStatus":
+                return {"status": status, "dir": "/d/x", "files": [{"index": str(f["index"]), "path": "/d/x/" + f["path"]}
+                                                                     for f in (files or fs)]}
+            return "OK"
+        o._bt_rpc = rpc_
+        return o
+    o = mk("*.url\n*.html\n_____padding_file*")
+    t = {}
+    cls._bt_on_followed(o, t, "g2")
+    chg = [c for c in o.calls if c[0] == "aria2.changeOption"]
+    check("bt_exclude 磁力元数据后：select-file 只留正片（1）", chg and chg[0][1] == ["g2", {"select-file": "1"}], o.calls)
+    check("bt_exclude 磁力：选完后 unpause 放行，且在 changeOption 之后",
+          [c[0] for c in o.calls][-2:] == ["aria2.changeOption", "aria2.unpause"], o.calls)
+    check("bt_exclude 磁力：任务记下 bt_select=[1] 且有日志", t.get("bt_select") == [1] and o.logs, (t, o.logs))
+    o = mk("")
+    cls._bt_on_followed(o, {}, "g3")
+    check("bt_exclude 为空：不改 select-file，只 unpause", [c[0] for c in o.calls][1:] == ["aria2.unpause"], o.calls)
+    o = mk("*")
+    cls._bt_on_followed(o, {}, "g4")
+    check("bt_exclude 全排除：回退全选，不改 select-file",
+          not [c for c in o.calls if c[0] == "aria2.changeOption"], o.calls)
+    o = mk("*.url", status="active")
+    cls._bt_on_followed(o, {}, "g5")
+    check("非 paused（没带 pause-metadata）也能改选，但不乱 unpause",
+          any(c[0] == "aria2.changeOption" for c in o.calls) and not any(c[0] == "aria2.unpause" for c in o.calls), o.calls)
+    o = mk("*.url")
+    cls._bt_on_followed(o, {"bt_select": [2, 3]}, "g6")
+    check("用户已手选文件（bt_select）：不覆盖，仍 unpause",
+          not any(c[0] == "aria2.changeOption" for c in o.calls) and o.calls[-1][0] == "aria2.unpause", o.calls)
+    o = mk("a/sub/*", files=[{"index": 1, "path": "a/m.mkv"}, {"index": 2, "path": "a/sub/x.mp4"}])
+    cls._bt_on_followed(o, {}, "g7")
+    chg = [c for c in o.calls if c[0] == "aria2.changeOption"]
+    check("路径通配按种子内相对路径匹配（去掉保存目录前缀）", chg and chg[0][1][1]["select-file"] == "1", o.calls)
+
+
 def main():
     t_platform_util()
+    t_bt_exclude()
 
     shutil.rmtree(DATA, ignore_errors=True)
     os.makedirs(os.path.join(DATA, "out"), exist_ok=True)

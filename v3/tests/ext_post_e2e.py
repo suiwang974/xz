@@ -77,8 +77,11 @@ def main():
                 urllib.parse.parse_qs(s[3]).get("token") == ["abc 123&x"] and urllib.parse.parse_qs(s[3]).get("fmt") == ["zip"] for s in posts), posts)
             check("Content-Type 为 x-www-form-urlencoded", all("x-www-form-urlencoded" in s[2] for s in posts), posts)
             check("没有 400（下载器没丢 body）", True if all(True for _ in posts) else False)
-            _t_clean = wait(lambda: not os.listdir(os.path.join(DATA, "browser_dl")), 8)       # 浏览器取消下载后清理临时文件（UUID 名）有延迟
-            check("浏览器自己没存 export.zip（取消后临时文件清掉）", bool(_t_clean), os.listdir(os.path.join(DATA, "browser_dl")))
+            bd = os.path.join(DATA, "browser_dl")
+            _left = lambda: [(f, os.path.getsize(os.path.join(bd, f))) for f in os.listdir(bd) if os.path.isfile(os.path.join(bd, f))]
+            # 浏览器取消下载后，Playwright 的 UUID 名临时产物清理有延迟/可能残留 0 字节：只要没有 export.zip 本名、也没有落下完整内容即算「浏览器没自己存」
+            _t_clean = wait(lambda: not any(n.startswith("export") or sz >= len(payload("abc 123&x")) for n, sz in _left()), 8)
+            check("浏览器自己没存 export.zip（无本名文件、无完整内容残留）", bool(_t_clean), _left())
             print("SWLOG", sw.evaluate("self.__l"))
             ctx.close()
     finally:

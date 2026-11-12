@@ -4278,8 +4278,58 @@ class _AbortSignal(Exception):
     """从 yt-dlp progress_hook 内部抛出，强制打断 HLS 分片循环（暂停/终止即时生效）。"""
 
 
+def kill_aria2c_under(tmpdir):
+    """杀掉命令行里带 tmpdir 的 aria2c 子进程（yt-dlp 的外部下载器）。返回杀掉的个数。
+    yt-dlp 调外部下载器是阻塞等子进程退出，进度钩子里的「取消/暂停」信号碰不到它——不杀它，
+    删除/暂停后 aria2c 会继续把整个文件下完（并把刚清掉的 .part 重新写出来）。"""
+    n = 0
+    key = os.path.normpath(tmpdir).replace("\\", "/").rstrip("/")
+    me = os.getpid()
+    for pid, name, cmd in list_processes():
+        if pid == me or not (name or "").lower().startswith("aria2c"):
+            continue
+        if key and key in (cmd or "").replace("\\", "/"):
+            try:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=10,
+                                   creationflags=0x08000000)
+                else:
+                    os.kill(pid, 9)
+                n += 1
+            except Exception:
+                pass
+    return n
+
+
 def download_one(entry, page_url, outdir, quality, on_progress,
                  extra_opts=None, log=noop_log, pp_hook=None, abort=None):
+    """下载一条（实现见 _download_one_impl）。外面包一层看门狗：abort() 变真时杀掉 yt-dlp 拉起的 aria2c 外部下载器，
+    让取消/暂停/删除对「yt-dlp + aria2c」的任务真的生效。"""
+    if not callable(abort):
+        return _download_one_impl(entry, page_url, outdir, quality, on_progress, extra_opts, log, pp_hook, abort)
+    stop = threading.Event()
+    tmpdir = os.path.join(outdir, ".snifftmp", hashlib.md5(
+        (entry.get("url") or entry.get("title") or "v").encode("utf-8", "ignore")).hexdigest()[:12])
+
+    def _watch():
+        while not stop.wait(0.6):
+            try:
+                if abort():
+                    k = kill_aria2c_under(tmpdir)
+                    if k:
+                        log("[下载] 已按指令停掉 %d 个外部下载器进程" % k)
+                    stop.wait(1.5)
+            except Exception:
+                pass
+    threading.Thread(target=_watch, daemon=True, name="dl-abort-watch").start()
+    try:
+        return _download_one_impl(entry, page_url, outdir, quality, on_progress, extra_opts, log, pp_hook, abort)
+    finally:
+        stop.set()
+
+
+def _download_one_impl(entry, page_url, outdir, quality, on_progress,
+                       extra_opts=None, log=noop_log, pp_hook=None, abort=None):
     if not callable(on_progress):
         def on_progress(*a, **kw):
             return None
@@ -9168,6 +9218,12 @@ class App:
             # 而真文件在后台偷偷下、暂停/删除都管不到它（2026-11-07 BT 实测复现）。
             _fb = st.get("followedBy") or []
             if status == "complete" and _fb:
+                try:
+                    _hk = getattr(self, "_bt_on_followed", None)      # 子类钩子：元数据到手、真下载还没开始时改选文件
+                    if _hk:
+                        _hk(t, str(_fb[0]))
+                except Exception as _e:
+                    self.log("[小夜·BT] 元数据后处理失败（忽略）：%s" % str(_e)[:80])
                 with self._rpc_lock:
                     t["btGid"] = str(_fb[0])
                     t["_meta_followed"] = True
@@ -10049,7 +10105,7 @@ class App:
                                   prog, extra_opts=None, log=self.log,
                                   pp_hook=pp_hook,
                                   abort=lambda: t.get("cancel", False))
-        except _AbortSignal:
+        except (_AbortSignal, SniffAbort):      # SniffAbort：download_one 的 yt-dlp 路径在被中断/外部下载器被杀时抛
             fp = False
             if t.get("purge"):
                 self._rpc_purge(t)

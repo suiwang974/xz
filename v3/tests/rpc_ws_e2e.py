@@ -155,7 +155,7 @@ def main():
                bt_lpd=False, bt_pex=False, max_concurrent=3)
 
         # 1 握手：RFC 6455 示例 key → 固定 Accept
-        w = WS(port, key="dGhlIHNhbXBsZSBub25jZQ==")
+        w = WS(port, key="dGhlIHNhbXBsZSBub25jZQ==")  # gitleaks:allow  (RFC 6455 示例 key，非密钥)
         check("ws 握手 101", w.status == 101, w.status)
         check("Accept 值符合 RFC 6455 示例", w.hdr.get("sec-websocket-accept") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
               w.hdr.get("sec-websocket-accept"))

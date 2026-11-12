@@ -68,6 +68,18 @@ def backoff_delay(attempt, retry_after=None, base=0.5, cap=15.0):
     return d * (0.5 + random.random() * 0.5)
 
 
+class _WakeEvent(threading.Event):
+    """停止事件：set() 的同时叫醒控制线程（控制线程不用干等满一个 TICK）。"""
+
+    def __init__(self, wake):
+        super().__init__()
+        self._wake_evt = wake
+
+    def set(self):
+        super().set()
+        self._wake_evt.set()
+
+
 class _Segment:
     __slots__ = ("start", "pos", "reserved", "end")
 
@@ -150,7 +162,8 @@ class DownloadTask:
 
         self._lk = threading.RLock()
         self._ctl = None
-        self._stop = threading.Event()
+        self._wake = threading.Event()   # 控制线程的「别等 TICK 了」信号：worker 干完一段 / 停止时置位
+        self._stop = _WakeEvent(self._wake)
         self._user_action = None        # "pause" / "cancel"
         self._done_evt = threading.Event()
         self.state = "probing"
@@ -171,7 +184,8 @@ class DownloadTask:
         with self._lk:
             if self._ctl and self._ctl.is_alive():
                 return self
-            self._stop = threading.Event()
+            self._wake = threading.Event()
+            self._stop = _WakeEvent(self._wake)
             self._user_action = None
             self._done_evt.clear()
             self.error = None
@@ -595,10 +609,17 @@ class DownloadTask:
         self._spawn(w0, (seg, resp))
 
         last_save = time.monotonic()
+        last_tick = 0.0
         while True:
-            if self._stop.wait(TICK):
+            # 小文件/收尾：worker 一干完就置 _wake，控制线程立刻去收尾，不再白等整整一个 TICK（原先每个文件固定多 ~0.25s）
+            self._wake.wait(TICK)
+            self._wake.clear()
+            if self._stop.is_set():
                 break
             now = time.monotonic()
+            if now - last_tick < 0.1 and self._remaining_bytes() > 0:
+                continue                # 被 worker 频繁叫醒时别空转：常规评估最快每 0.1s 一次
+            last_tick = now
             self._poll_limit(now)
             self._tick_speed()
             self._detect_slow(now)
@@ -788,6 +809,7 @@ class DownloadTask:
             with self._lk:
                 if w in self._workers:
                     self._workers.remove(w)
+            self._wake.set()
 
     def _run_segment(self, w, seg, resp):
         if resp is None:
@@ -850,6 +872,7 @@ class DownloadTask:
                         shrunk = req_end is None or seg.end != req_end
                     if finished:
                         drained = (not shrunk) and allowed == len(data)
+                        self._wake.set()
                         break
                 if eof:
                     with self._lk:
@@ -1027,7 +1050,7 @@ class DownloadTask:
             tgt = max(1, int(round(n * THROTTLE_FACTOR)))
             # 正在出数据的连接数 ≈ 服务器肯给的并发（多出来的那批正吃 429/503）：学成本任务的上限，
             # 之后再加连接也不越过它，避免「降→加→又被拒」来回撞墙（A15）
-            live = sum(1 for w in self._workers if w.resp is not None and w.seg is not None)
+            live = sum(1 for w in self._workers if getattr(w, "resp", None) is not None and w.seg is not None)
             # 只认 429/503（明确的「太多了」）；401/403 多半是一次性链接拒分片，交给 _give_back 并回开放流
             if status in (429, 503) and live >= 1 and live < n:
                 tgt = min(tgt, live)
