@@ -4,10 +4,12 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 * * * *'   # 每小时整点后 17 分在 Windows 上自动跑全套实测（不占 Hark 额度）
 
 concurrency:
-  group: wintest
-  cancel-in-progress: true
+  group: wintest-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 env:
   PYTHONIOENCODING: utf-8
