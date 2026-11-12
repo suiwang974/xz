@@ -467,7 +467,10 @@ class Engine(V.App):
 
     # ================================================================ 任务选项注入
     def _rpc_start_from_info(self, info, outdir, name):
-        """扩展接管 POST 下载：info 带 method=POST/post_data 时注入任务选项（走 sdl 分片，不探测）。"""
+        """扩展接管 POST 下载：info 带 method=POST/post_data 时注入任务选项（走 sdl 分片，不探测）。
+        info 带 mime=application/x-bittorrent（浏览器 DownloadItem.mime）→ 无后缀链接也按种子归 BT。"""
+        if self._is_torrent_hint(info.get("filename") or name or "", info.get("mime") or ""):
+            self.__dict__.setdefault("_torrent_uris", set()).add((info.get("url") or "").strip())
         if str(info.get("method") or "").upper() == "POST":
             _TL.add_opts = {"method": "POST", "post_data": info.get("post_data") or ""}
             try:
@@ -476,7 +479,33 @@ class Engine(V.App):
                 _TL.add_opts = None
         return super()._rpc_start_from_info(info, outdir, name)
 
+    @staticmethod
+    def _is_torrent_hint(name, mime=""):
+        """推送方给的文件名是 *.torrent，或 Content-Type 是 application/x-bittorrent → 是种子。"""
+        return (name or "").strip().lower().endswith(".torrent") or \
+            (mime or "").split(";")[0].strip().lower() == "application/x-bittorrent"
+
+    def _rpc_is_bt(self, uri):
+        """在 v2 规则（磁力 / 路径或参数含 .torrent / infohash 直链）之外：无后缀的种子直链
+        （网盘/论坛 attachment.php?aid=…），推送时文件名是 .torrent 的，也归 BT。"""
+        if super()._rpc_is_bt(uri):
+            return True
+        u = (uri or "").strip()
+        if not u.lower().startswith(("http://", "https://", "ftp://")):
+            return False
+        reg = self.__dict__.get("_torrent_uris")
+        if reg and u in reg:
+            return True
+        for t in list((self.__dict__.get("_rpc_tasks") or {}).values()):   # 重启恢复的任务：按记下的名字认
+            if isinstance(t, dict) and t.get("uri") == u and self._is_torrent_hint(t.get("name"), t.get("mime")):
+                self.__dict__.setdefault("_torrent_uris", set()).add(u)
+                return True
+        return False
+
     def _rpc_new_task(self, gid, uri, name, outdir, referer, headers, src="user"):
+        opts0 = getattr(_TL, "add_opts", None) or {}
+        if self._is_torrent_hint(name, opts0.get("mime") or ""):
+            self.__dict__.setdefault("_torrent_uris", set()).add((uri or "").strip())
         t = super()._rpc_new_task(gid, uri, name, outdir, referer, headers, src=src)
         opts = getattr(_TL, "add_opts", None) or {}
         for k in TASK_OPT_KEYS:
@@ -847,6 +876,19 @@ class Engine(V.App):
 
     def _http_aria2c(self, url, outdir, name, headers, prog=None, cancel=None, conn=None, min_split="1M",
                      status_cb=None):
+        """外层兜底：动态分片或 aria2 任何一处报磁盘满，都直接让任务停，不交给 v2 回退单连接重下。"""
+        try:
+            return self._http_aria2c_body(url, outdir, name, headers, prog, cancel, conn, min_split, status_cb)
+        except V._AbortSignal:
+            raise
+        except (OSError, RuntimeError) as e:
+            if self._is_diskfull(e):
+                self.log("[直链] 磁盘写满，直接停止（不换单连接重下）：%s" % str(e)[:90])
+                self._hard_fail(getattr(_TL, "task", None), "磁盘空间不足，已停止：" + str(e)[:80])
+            raise
+
+    def _http_aria2c_body(self, url, outdir, name, headers, prog=None, cancel=None, conn=None, min_split="1M",
+                          status_cb=None):
         t = getattr(_TL, "task", None)
         work = self._work_dir(outdir)
         final = os.path.join(outdir, name)
@@ -937,7 +979,11 @@ class Engine(V.App):
         if getattr(e, "errno", None) in (errno.ENOSPC, getattr(errno, "EDQUOT", -1)):
             return True
         m = str(e).lower()
-        return any(k in m for k in ("no space left", "disk full", "磁盘空间不足", "磁盘已满"))
+        if any(k in m for k in ("no space left", "disk full", "磁盘空间不足", "磁盘已满", "not enough disk space",
+                                "disk cache flush failure")):
+            return True
+        import re
+        return bool(re.search(r"\bcode=9\b", m))       # aria2 errorCode 9 = 磁盘空间不足
 
     def _hard_fail(self, t, msg):
         """让任务直接失败：原 _rpc_direct_file 对 _http_aria2c 抛出的普通异常会「回退单连接」，
@@ -1543,6 +1589,23 @@ class Engine(V.App):
                 time.sleep(d)
                 sweep()
         threading.Thread(target=later, daemon=True, name="purge-late").start()
+
+    def _bt_hard_remove(self, t):
+        """BT 删除也听 cancel_cleanup：选「保留」时只停任务、摘结果，不删已下片段与 .aria2（以后可重新加种续下）。
+        原版 _bt_hard_remove 无条件删文件。"""
+        want = t.get("_cleanup")
+        if want is None:
+            want = self._cleanup_choice(False, None)
+        if want is not False:
+            return super()._bt_hard_remove(t)
+        g = t.get("btGid")
+        if g:
+            for m in ("aria2.forceRemove", "aria2.removeDownloadResult"):
+                try:
+                    self._bt_rpc(m, [g])
+                except Exception:
+                    pass
+        self.log("[删除] BT 任务按设置保留未完成的文件：%s" % ((t.get("name") or "")[:60] or "—"))
 
     def task_remove(self, gids, delete_files=False, cleanup=None):
         moved, failed = [], []

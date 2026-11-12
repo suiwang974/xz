@@ -42,7 +42,8 @@ def main():
         t0 = time.time()
         while not ctx.service_workers and time.time() - t0 < 15: time.sleep(0.3)
         sw = ctx.service_workers[0]
-        check("扩展版本 0.7.1", sw.evaluate("chrome.runtime.getManifest().version") == "0.7.1")
+        _want = json.load(open(os.path.join(HERE, "extension", "manifest.json"), encoding="utf-8"))["version"]
+        check("扩展版本 = manifest %s" % _want, sw.evaluate("chrome.runtime.getManifest().version") == _want)
         pg = ctx.new_page(); pg.goto(base + "/page"); pg.wait_for_timeout(800)
         pg.mouse.move(300, 200); pg.mouse.move(320, 210); pg.wait_for_timeout(400)
         check("大视频（被控件层盖住）悬停出钮", pg.evaluate(vis))

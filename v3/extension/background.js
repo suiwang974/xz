@@ -195,6 +195,7 @@ async function v3Take(info, user, rules) {
     headers: info.headers || null, url: info.url, filename: info.filename || "", referer: info.referer || "",
     cookie: cookie || "", ua: (typeof navigator !== "undefined" && navigator.userAgent) || "",
     size: info.size || 0, source: user ? "chip" : "browser", confirm: !!(rules && rules.confirm),
+    mime: info.mime || "",
     ...(pd ? { method: "POST", post_data: pd,
                headers: Object.assign({}, info.headers || {}, { "Content-Type": "application/x-www-form-urlencoded" }) } : {}),
   }]);
@@ -556,7 +557,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
     const url = item.finalUrl || item.url || "";
     let referer = "";
     try { const tb = await chrome.tabs.get(tabId); referer = (tb && tb.url) || ""; } catch (e) {}
-    let info = { url, filename: baseName(item, url), referer: referer || item.referrer || "", size: item.totalBytes || 0, source: "browser" };
+    let info = { url, filename: baseName(item, url), referer: referer || item.referrer || "", size: item.totalBytes || 0, source: "browser", mime: item.mime || "" };
     info = await withCaptured(info);     // 网盘：带上浏览器真实发出的 UA/Cookie/Referer
     if (isNd) scheduleCookieSync(200);
     cancelling.add(item.id);                               // 先取消浏览器自己的下载，再交给看板娘

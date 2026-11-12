@@ -8,6 +8,7 @@
   pause    暂停 → .sdl/.sdlpart 保留 → 继续只补剩下的；resume_policy=restart 从头；
            resume_policy=always 遇到服务器不再认 Range → 报错且保留进度；auto 同情况从头下完
   cancel   cancel_cleanup = always / never / ask(第3参 true/false)，sdl 与 aria2 两种引擎的临时文件
+  diskfull 磁盘满（4MB tmpfs，unshare -rm 重入）：预检不开始；aria2/sdl/auto 写满后停下、提示磁盘、不回退单连接、不刷重试
   incdir   incomplete_dir：下载中临时文件在未完成目录、保存位置没有；完成后移到保存位置、未完成目录无残留
 
 用法（v3 目录，先 source env/setup.sh、env/v3env.sh，PATH 加 /workspace/work/sdl/speed/tools）：
@@ -601,8 +602,122 @@ def g_linkswift():
     check("无 token tellStopped 含该任务", any(x.get("gid") == gid for x in (j.get("result") or [])), j)
 
 
+def _mk_torrent(tag, announce):
+    sys.path.insert(0, os.path.join(HERE, "tests"))
+    import core_unit as CU                 # 复用其 bencode / 造种子（模块无副作用，main 有 __name__ 守卫）
+    data = random.Random(tag).randbytes(300 * 1024)
+    plen = 64 * 1024
+    pieces = b"".join(hashlib.sha1(data[i:i + plen]).digest() for i in range(0, len(data), plen))
+    name = "bt_%s.bin" % tag
+    tb = CU.benc({"announce": announce, "info": {"name": name, "piece length": plen, "pieces": pieces,
+                                                   "length": len(data)}})
+    p = os.path.join(DATA, "bt_%s.torrent" % tag)
+    with open(p, "wb") as f:
+        f.write(tb)
+    return p, name
+
+
+def g_btclean():
+    """BT 任务删除时按 cancel_cleanup 清理：没下完的 payload 与 .aria2 控制文件（无做种者 → 永远下不完）。"""
+    dead = "http://127.0.0.1:%d/announce" % free_port()
+    for pol, a3, cleaned in (("always", None, True), ("never", None, False), ("ask", True, True), ("ask", False, False)):
+        base_settings()
+        setv(cancel_cleanup=pol)
+        tag = "%s_%s" % (pol, {None: "x", True: "y", False: "n"}[a3])
+        tp, name = _mk_torrent(tag, dead)
+        r = rpc("sniffdl.task.add", {"url": tp, "dir": OUT})
+        gid = r.get("gid") if isinstance(r, dict) else r
+        v = wait(lambda: (lambda x: x if x and x.get("kind") == "bt" and x["status"] in ("active", "waiting") else None)(view(gid)), 20)
+        have = wait(lambda: [x for x in os.listdir(OUT) if x.startswith(name)], 15)
+        tag2 = "BT 删除 cancel_cleanup=%s%s" % (pol, "" if a3 is None else " 第3参=%s" % a3)
+        check(tag2 + "：任务是 bt 且已落临时文件（%s）" % have, v and have, (v, have))
+        remove(gid, False, a3)
+        wait(lambda: view(gid) is None, 10)
+        time.sleep(4.5)
+        left = sorted(x for x in os.listdir(OUT) if x.startswith(name))
+        if cleaned:
+            check(tag2 + "：未完成 payload 与 .aria2 已清（剩 %s）" % left, left == [], left)
+        else:
+            check(tag2 + "：临时文件保留（%s）" % left, len(left) >= 1, left)
+        for x in left:
+            try:
+                os.remove(os.path.join(OUT, x))
+            except OSError:
+                pass
+    base_settings()
+
+
+DFMNT = "/tmp/sdlv3_dfmnt"          # 4MB tmpfs（unshare -rm 用户命名空间内挂载，见 main 里的重入）
+DF_SIZE_MB = 4
+
+
+def _df_settle(gid, timeout=40):
+    """等任务落到终态（磁盘满后内核把 error 改成 paused + 提示），再等 2s 看有无迟到的回退请求。"""
+    v = wait(lambda: (lambda x: x if x and x["status"] in ("error", "paused", "complete")
+                      and (x["status"] != "paused" or "磁盘" in (x.get("note") or "")) else None)(view(gid)), timeout)
+    return v
+
+
+def g_diskfull():
+    """磁盘满：真内核 + 真 tmpfs（4MB）写满 → 任务停（暂停/失败并提示磁盘），不回退单连接重下、不无限重试。"""
+    if not os.path.ismount(DFMNT):
+        print("SKIP diskfull：%s 不是挂载点（需 unshare -rm，Linux 专用）" % DFMNT, flush=True)
+        return
+    for f in os.listdir(DFMNT):
+        try:
+            os.remove(os.path.join(DFMNT, f))
+        except OSError:
+            pass
+    # 1) 开始前预检：服务器给了 Content-Length 且 > 剩余空间 → 不开始
+    base_settings()
+    setv(disk_check=True, speed_engine="auto")
+    name = "df_precheck.bin"
+    Files.add(name, 16 * MB)
+    gid = add(name, dir=DFMNT, size_hint=16 * MB)
+    v = wait(lambda: (lambda x: x if x and x["status"] in ("paused", "error", "complete") else None)(view(gid)), 20)
+    check("磁盘满 预检：16MB 任务在 4MB 盘上不开始（暂停 + 提示磁盘空间不足）",
+          v and v["status"] == "paused" and "磁盘空间不足" in (v.get("note") or ""), v)
+    check("磁盘满 预检：服务器没收到下载请求", Files.stat[name]["asked"] == 0, Files.stat[name])
+    remove(gid, True)
+    wait(lambda: view(gid) is None, 10)
+    # 2) 关预检，三种引擎真写满
+    for eng in ("aria2", "sdl", "auto"):
+        base_settings()
+        setv(disk_check=False, speed_engine=eng, retry_count=2, retry_wait=1)
+        for f in os.listdir(DFMNT):
+            try:
+                os.remove(os.path.join(DFMNT, f))
+            except OSError:
+                pass
+        name = "df_%s.bin" % eng
+        Files.add(name, 16 * MB)
+        mk = log_mark()
+        gid = add(name, dir=DFMNT)
+        v = _df_settle(gid)
+        time.sleep(3.0)
+        req1 = Files.stat[name]["req"]
+        time.sleep(3.0)
+        req2 = Files.stat[name]["req"]
+        v = view(gid)
+        lg = "\n".join(logs_since(mk))
+        blob = json.dumps(v, ensure_ascii=False)
+        check("磁盘满 引擎=%s：任务停下（暂停/失败，不是完成）" % eng, v and v["status"] in ("paused", "error"), v)
+        check("磁盘满 引擎=%s：提示含「磁盘」" % eng, v and "磁盘" in blob, blob[:400])
+        check("磁盘满 引擎=%s：不回退单连接重下（日志无「回退单连接」）" % eng, "回退单连接…" not in lg, lg[-600:])
+        check("磁盘满 引擎=%s：停下后服务器不再收到请求（不自动重试刷盘，%d→%d）" % (eng, req1, req2),
+              req1 == req2, (req1, req2))
+        noring = sum(1 for h in Files.stat[name].get("hdrs", []) if "range" not in h)
+        check("磁盘满 引擎=%s：不带 Range 的整文件请求 ≤1（没被单连接从头重下，实际 %d）" % (eng, noring),
+              noring <= 1, Files.stat[name])
+        remove(gid, True, True)
+        wait(lambda: view(gid) is None, 10)
+        time.sleep(1.0)
+    base_settings()
+    setv(disk_check=True)
+
+
 GROUPS = [("modes", g_modes), ("fallback", g_fallback), ("limit", g_limit), ("pause", g_pause),
-          ("cancel", g_cancel), ("incdir", g_incdir), ("rpcopt", g_rpcopt), ("linkswift", g_linkswift)]
+          ("cancel", g_cancel), ("incdir", g_incdir), ("rpcopt", g_rpcopt), ("linkswift", g_linkswift), ("diskfull", g_diskfull), ("btclean", g_btclean)]
 
 
 def main(argv):
@@ -611,6 +726,14 @@ def main(argv):
         out = argv[argv.index("--out") + 1]
         argv = [a for a in argv if a not in ("--out", out)]
     want = [a for a in argv if not a.startswith("-")] or [g for g, _ in GROUPS]
+    if "diskfull" in want and not os.environ.get("SDL_DF_NS") and shutil.which("unshare") and sys.platform.startswith("linux"):
+        # 重入：在用户+挂载命名空间里挂一个 4MB tmpfs 再跑（无需 root）；失败则不重入，diskfull 组记 SKIP
+        cmd = "mkdir -p %s && mount -t tmpfs -o size=%dm tmpfs %s && exec %s %s %s" % (
+            DFMNT, DF_SIZE_MB, DFMNT, sys.executable, os.path.abspath(__file__),
+            " ".join("'%s'" % a.replace("'", "") for a in sys.argv[1:]))
+        r = subprocess.call(["unshare", "-rm", "sh", "-c", cmd], env=dict(os.environ, SDL_DF_NS="1"))
+        if r != 126 and r != 127:
+            return r
     shutil.rmtree(DATA, ignore_errors=True)
     os.makedirs(OUT, exist_ok=True)
     srv = QuietServer(("127.0.0.1", 0), Handler)
