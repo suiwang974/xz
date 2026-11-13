@@ -31,6 +31,12 @@ class TokenBucket:
         end = time.monotonic() + wait
         while True:
             left = end - time.monotonic()
-            if left <= 0 or (cancel and cancel()):
+            if left <= 0:
+                return
+            if cancel and cancel():
+                # 被取消/暂停打断：没睡完的那部分透支退还，否则几十个分片线程各欠一笔，
+                # 后来的任务要替它们把债还完（实测删掉任务后新任务整整卡 35 秒 0 字节）
+                with self._lock:
+                    self._tokens = min(self.rate, self._tokens + min(n, left * self.rate))   # 只退自己这一笔，别连别的线程的债一起退
                 return
             time.sleep(min(0.2, left))

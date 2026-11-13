@@ -50,7 +50,10 @@ class ClipWatcher:
             return False
         self._last = text
         if self.enabled():
-            self.on_text(text)
+            try:
+                self.on_text(text)
+            except Exception:
+                return False            # 回调出错不能带崩监视线程
             return True
         return False
 

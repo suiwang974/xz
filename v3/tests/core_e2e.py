@@ -485,6 +485,9 @@ def g_cancel():
             if cleaned:
                 check(tag + "：临时文件已清（删前 %s）" % before, gone and has_tmp and after == [], (before, after))
             else:
+                if not (gone and has_tmp and len(after) >= 1):
+                    for L in (rpc("sniffdl.logs", 60) or [])[-25:]:
+                        print("   LOG", str(L)[:200])
                 check(tag + "：临时文件保留（%s）" % after, gone and has_tmp and len(after) >= 1, (before, after))
             for x in after:
                 try:
