@@ -271,6 +271,13 @@ def needs_sdl(eng, url, conn=None, task=None):
     return n if n > ARIA2_HARD else 0
 
 
+def _cancel_set(cancel):
+    try:
+        return bool(cancel and cancel())
+    except Exception:
+        return False
+
+
 def _discard(out_path):
     for p in (out_path + TMP_SUFFIX, out_path + SIDE_SUFFIX, out_path + SIDE_SUFFIX + ".tmp"):
         try:
@@ -370,7 +377,7 @@ def run_http(eng, url, outdir, name, headers, prog=None, cancel=None, conn=None,
                              stall_timeout=stall_timeout, limiter=lim, tmp_suffix=TMP_SUFFIX,
                              side_suffix=SIDE_SUFFIX, trust_env=trust_env, method=meth, data=body,
                              **({"max_probe_retries": 2} if meth != "GET" else {}))   # POST 非幂等：少重试
-            while not dt._done_evt.wait(0.2):
+            while not dt._done_evt.wait(0.05):   # 50ms 轮询取消：太慢的话限速桶看到取消就放行，这段时间分片会不限速狂下
                 c = False
                 try:
                     c = cancel()
@@ -387,6 +394,8 @@ def run_http(eng, url, outdir, name, headers, prog=None, cancel=None, conn=None,
         except SPEED.CancelledError:
             raise abort_exc()()
         except SPEED.SpeedError as e:
+            if _cancel_set(cancel):       # 用户刚点了取消/暂停，同时撞上连接错误：按取消处理，别丢进度
+                raise abort_exc()()
             st = e.status
             expired = False
             if ND is not None:
@@ -404,6 +413,8 @@ def run_http(eng, url, outdir, name, headers, prog=None, cancel=None, conn=None,
         except Exception as e:
             if isinstance(e, (Fallback, RuntimeError)) or e.__class__ is abort_exc():
                 raise
+            if _cancel_set(cancel):
+                raise abort_exc()()
             _discard(path)
             raise Fallback("引擎异常：%s: %s" % (type(e).__name__, str(e)[:120]))
     finally:
