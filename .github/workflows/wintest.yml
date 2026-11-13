@@ -218,3 +218,27 @@ jobs:
           path: |
             wintest_out_trial/
             !wintest_out_trial/*_raw.mp4
+
+  build_exe:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: PyInstaller build SniffDL.exe
+        working-directory: v3
+        run: |
+          python -m pip install --disable-pip-version-check pyinstaller
+          if (Test-Path ..\wintest\requirements-ci.txt) { python -m pip install -r ..\wintest\requirements-ci.txt }
+          python -m PyInstaller --noconfirm --distpath ..\dist_exe --workpath ..\build_exe SniffDL.spec
+          Get-ChildItem ..\dist_exe -Recurse | Select-Object -First 20 FullName, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SniffDL_exe_build
+          retention-days: 7
+          path: dist_exe/
