@@ -65,7 +65,7 @@ jobs:
           "$d" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
           "SNIFFDL_ARIA2C=$d\aria2c.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
 
@@ -170,7 +170,7 @@ jobs:
           $d = (Get-ChildItem C:\aria2 -Directory | Select-Object -First 1).FullName
           "ARIA2_DIR=$d" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
 
