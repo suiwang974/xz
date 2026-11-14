@@ -16,7 +16,16 @@ import threading
 import time
 import urllib.request
 
+T0 = time.time()   # 冷启动计时起点（--selftest 报「到 READY 用时」）
 HERE = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
+
+
+def _default_ui_dir():
+    """PyInstaller 6 onedir 的数据在 _internal（=_MEIPASS），不在 exe 旁边：两处都找。"""
+    for base in (getattr(sys, "_MEIPASS", None), HERE):
+        if base and os.path.isdir(os.path.join(base, "ui")):
+            return os.path.join(base, "ui")
+    return os.path.join(HERE, "ui")
 
 
 def _ping(info):
@@ -31,23 +40,66 @@ def _ping(info):
         return False
 
 
+def _run_selftest(a, eng, V, tmp):
+    import shutil
+    import pack_selftest as PS
+    ready_s = time.time() - T0
+    items = []
+    try:
+        items += PS.check_modules()
+        try:
+            a2 = V.resolve_aria2c(eng.cfg) or V.ARIA2C
+        except Exception:
+            a2 = getattr(V, "ARIA2C", None)
+        items.append(PS.check_aria2c(a2))
+        items.append(PS.check_cn_dir(V.BASE_DIR))
+        items += PS.check_resources()
+        items.append(PS.check_rpc_up(eng.port))
+        from core import api as _api
+        try:
+            ent = getattr(_api, "_REG", {}).get("sniffdl.selftest")
+            fn = ent[0] if ent else _api._selftest
+            res = fn(eng, [])
+        except Exception as ex:
+            res = {"items": [{"name": "自检执行", "ok": False, "detail": str(ex)[:200]}]}
+        items += PS.merge_api_items(res.get("items"), strict=a.strict)
+    except Exception as ex:   # 自检本身炸了也要落一条 FAIL，不能静默 0
+        items.append(PS._item("自检执行", False, "%s: %s" % (type(ex).__name__, str(ex)[:200])))
+    port = eng.port
+    eng.shutdown()
+    items.append(PS.check_rpc_down(port, eng.runtime_path))
+    summ = PS.summarize(items)
+    extra = {"frozen": PS.is_frozen(), "ready_s": round(ready_s, 2), "data_dir": V.BASE_DIR,
+             "resource_dirs": PS.resource_dirs()}
+    PS.emit(PS.format_lines(items, summ, extra), a.selftest_out or None)
+    if tmp:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return 0 if summ["ok"] else 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="sniffdl-core")
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--runtime", default=os.path.join(HERE, "runtime.json"))
     ap.add_argument("--ui-token", default="")
     ap.add_argument("--host", default="none")
-    ap.add_argument("--ui-dir", default=os.path.join(HERE, "ui"))
+    ap.add_argument("--ui-dir", default=_default_ui_dir())
     ap.add_argument("--watch-stdin", action="store_true", help="stdin 关闭（宿主退出）时内核跟着退")
     ap.add_argument("--parent-pid", type=int, default=0)
     ap.add_argument("--data-dir", default=os.environ.get("SNIFFDL_DATA_DIR", ""),
                     help="配置/任务库/日志放这里（默认程序目录；测试用临时目录隔离）")
-    ap.add_argument("--selftest", action="store_true", help="自检：隔离数据目录起内核→跑 sniffdl.selftest→打印→退出（0=全过）")
+    ap.add_argument("--selftest", action="store_true",
+                    help="自检：隔离的中文数据目录起内核→打包清单+sniffdl.selftest→起停 RPC→打印→退出（0=全过）")
+    ap.add_argument("--selftest-out", default=os.environ.get("SNIFFDL_SELFTEST_OUT", ""),
+                    help="自检结果另写一份到这个文件（窗口版 exe 没有控制台，CI 读它）")
+    ap.add_argument("--strict", action="store_true", help="自检里 ffmpeg/6800 端口/保存目录 也算致命项")
     a = ap.parse_args(argv)
+    tmp = None
     if a.selftest:
         import tempfile
         tmp = tempfile.mkdtemp(prefix="sdl_selftest_")
-        a.data_dir = a.data_dir or tmp
+        # 数据目录故意用「中文 + 空格」：整条内核链路都在这种路径上跑一遍
+        a.data_dir = a.data_dir or os.path.join(tmp, "数据 目录")
         a.runtime = os.path.join(tmp, "runtime.json")
 
     from core import runtime as RT
@@ -81,16 +133,7 @@ def main(argv=None):
     eng.start(port=a.port or None)
 
     if a.selftest:
-        from core import api as _api
-        try:
-            res = _api.REGISTRY["sniffdl.selftest"](eng, {}) if hasattr(_api, "REGISTRY") else _api._selftest(eng, {})
-        except Exception as ex:
-            res = {"ok": False, "items": [{"name": "自检执行", "ok": False, "detail": str(ex)[:200]}]}
-        for i in res["items"]:
-            print(("OK   " if i["ok"] else "FAIL ") + i["name"] + "  " + i.get("detail", ""))
-        print("SELFTEST " + ("PASS" if res["ok"] else "FAIL"))
-        eng.shutdown()
-        return 0 if res["ok"] else 1
+        return _run_selftest(a, eng, V, tmp)
 
     stop = threading.Event()
 

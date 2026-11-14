@@ -220,8 +220,9 @@ jobs:
             !wintest_out_trial/*_raw.mp4
 
   build_exe:
+    # 打包验收：失败就是真红 —— 本 job 任何步骤都不加 continue-on-error（除了 if: always() 的上传/汇总）
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     defaults:
       run:
         shell: pwsh
@@ -230,14 +231,42 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: aria2c 1.37.0 → v3/vendor（spec 把它打进包根；selftest 查「aria2c 随包」）
+        run: |
+          Invoke-WebRequest $env:ARIA2_URL -OutFile aria2.zip
+          Expand-Archive aria2.zip -DestinationPath C:\aria2
+          $d = (Get-ChildItem C:\aria2 -Directory | Select-Object -First 1).FullName
+          New-Item -ItemType Directory -Force v3\vendor | Out-Null
+          Copy-Item "$d\aria2c.exe" v3\vendor\aria2c.exe -Force
+          & v3\vendor\aria2c.exe --version | Select-Object -First 1
+
       - name: PyInstaller build SniffDL.exe
         working-directory: v3
         run: |
-          python -m pip install --disable-pip-version-check pyinstaller
-          if (Test-Path ..\wintest\requirements-ci.txt) { python -m pip install -r ..\wintest\requirements-ci.txt }
+          python -m pip install --disable-pip-version-check pyinstaller -r ..\wintest\requirements-ci.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python -m PyInstaller --noconfirm --distpath ..\dist_exe --workpath ..\build_exe SniffDL.spec
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (-not (Test-Path ..\dist_exe\SniffDL\SniffDL.exe)) { Write-Error "产物缺失 dist_exe\SniffDL\SniffDL.exe"; exit 1 }
           Get-ChildItem ..\dist_exe -Recurse | Select-Object -First 20 FullName, Length
+
+      - name: exe --selftest + 无界面内核真下载 + 体积/冷启动 → step summary
+        run: |
+          python v3\tools\exe_ci_check.py --exe dist_exe\SniffDL\SniffDL.exe --dist dist_exe\SniffDL --out exe_ci_out
+          $rc = $LASTEXITCODE
+          if (Test-Path exe_ci_out\selftest.txt) { Get-Content -Encoding utf8 exe_ci_out\selftest.txt | Where-Object { $_ -notlike 'SELFTEST_JSON*' } }
+          exit $rc
+
       - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: SniffDL_exe_check
+          retention-days: 7
+          path: exe_ci_out/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: SniffDL_exe_build
           retention-days: 7

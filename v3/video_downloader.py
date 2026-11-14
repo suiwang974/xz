@@ -20137,6 +20137,14 @@ def ensure_single_instance():
 
 def main():
     argv = sys.argv[1:]
+    # 打包形态：exe 兼任无界面内核入口 / 打包自检入口（CI 跑 `SniffDL.exe --selftest`、`SniffDL.exe --core …`）。
+    # 必须在单实例锁、Tk 之前分流；并把 __main__ 登记成 video_downloader，免得 sniffdl_core/core.engine
+    # 再 import 一份新副本（两份全局：BASE_DIR/ARIA2C 改在一份上，另一份不知道）。
+    if argv and argv[0] in ("--core", "--selftest"):
+        if __name__ == "__main__":
+            sys.modules.setdefault("video_downloader", sys.modules["__main__"])
+        import sniffdl_core
+        sys.exit(sniffdl_core.main(argv[1:] if argv[0] == "--core" else argv))
     # 打包形态：exe 兼任桌宠宿主入口（pet_bridge 用 `exe --pet-host ...` 拉起）
     if argv and argv[0] == "--pet-host":
         try:

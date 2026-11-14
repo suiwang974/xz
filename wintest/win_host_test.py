@@ -224,7 +224,10 @@ def run_a():
                 (late_errs if killed[0] else errs).append("console.error: %s [%s]" % (m.text, u))
             late_errs = []
             ui.on("console", _con)
-            ui.wait_for_function("window.__sdlReady === true", timeout=40000)
+            # 界面有 CSP（script-src 'self'，无 unsafe-eval）：Playwright wait_for_function 的字符串谓词走 eval 会被拒，
+            # 改成 Python 侧轮询 evaluate（CDP Runtime.evaluate 不受页面 CSP 限制）
+            if not wait(lambda: ui.evaluate("window.__sdlReady === true"), 40, 0.5):
+                raise RuntimeError("主窗 40s 内未 __sdlReady")
             tl.seg("主窗出现")
             ui.bring_to_front()
             HU.pause(0.8, 1.2)
