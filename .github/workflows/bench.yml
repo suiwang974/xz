@@ -144,7 +144,7 @@ jobs:
         run: |
           python -c "from PIL import ImageGrab; import os; ImageGrab.grab().save(os.path.join(os.environ['BENCH_OUT'], 'shot_final.png'))"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bench-result
