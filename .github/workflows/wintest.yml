@@ -46,7 +46,7 @@ jobs:
           Add-Type -AssemblyName System.Windows.Forms
           [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -159,7 +159,7 @@ jobs:
           Add-Type -AssemblyName System.Windows.Forms
           [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -228,7 +228,7 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
