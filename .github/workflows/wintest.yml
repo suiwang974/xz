@@ -130,7 +130,7 @@ jobs:
         if: always()
         run: python wintest/summary.py
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: wintest-results
@@ -204,13 +204,13 @@ jobs:
           }
           python wintest/summary.py
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: SniffDL_v3_trial_win64
           retention-days: 7
           path: ${{ runner.temp }}/SniffDL_v3_trial_win64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: trial-smoke-results
@@ -258,14 +258,14 @@ jobs:
           if (Test-Path exe_ci_out\selftest.txt) { Get-Content -Encoding utf8 exe_ci_out\selftest.txt | Where-Object { $_ -notlike 'SELFTEST_JSON*' } }
           exit $rc
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: SniffDL_exe_check
           retention-days: 7
           path: exe_ci_out/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: SniffDL_exe_build
