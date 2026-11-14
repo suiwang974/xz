@@ -149,7 +149,44 @@ def t_etag():
     C.check("etag：任务有终态", bool(v), v)
 
 
-TESTS = [("norange", t_norange), ("drop", t_drop), ("flaky503", t_flaky), ("etag", t_etag)]
+def _win(offset_min_start, offset_min_stop):
+    import datetime as dt
+    n = dt.datetime.now()
+    f = lambda d: (n + dt.timedelta(minutes=d)).strftime("%H:%M")
+    return {"enabled": True, "start": f(offset_min_start), "stop": f(offset_min_stop), "days": []}
+
+
+def t_sched():
+    """真内核计划任务：窗口外不开工 → 窗口开启自动下载 → 窗口关闭暂停（sched_paused）→ 再开自动续完 sha 一致"""
+    mk("sc.bin", 14 * MB)
+    q = C.rpc("sniffdl.queue.save", {"name": "夜间计划", "schedule": _win(60, 120)})["queue"]
+    qid = q["id"]
+    r = C.rpc("sniffdl.task.add", {"url": "http://127.0.0.1:%d/etag/sc.bin" % C.FPORT[0], "name": "sc.bin", "dir": OUT, "queue": qid})
+    g = r.get("gid") if isinstance(r, dict) else r
+    C.check("sched：任务建在计划队列里", bool(g), r)
+    time.sleep(3)
+    v = C.view(g)
+    C.check("sched：窗口外保持等待、没有开工", v and v["status"] in ("waiting", "paused") and not v["done"], v)
+    C.check("sched：窗口外服务器没收到请求", STATE.get("sc.bin", 0) == 0, STATE.get("sc.bin"))
+    # 打开窗口（现在在 [-1, +60] 分钟内）
+    C.rpc("sniffdl.queue.save", dict(q, schedule=_win(-1, 60)))
+    v = C.wait_done_bytes(g, 2 * MB, 30)
+    C.check("sched：窗口开启后自动开始下载", bool(v), C.view(g))
+    # 关闭窗口 → 暂停
+    C.rpc("sniffdl.queue.save", dict(q, schedule=_win(60, 120)))
+    v = C.wait(lambda: (lambda x: x if x and x["status"] in ("waiting", "paused") else None)(C.view(g)), 20)
+    C.check("sched：窗口关闭后暂停", bool(v), C.view(g))
+    d0 = (C.view(g) or {}).get("done", 0)
+    time.sleep(2.5)
+    d1 = (C.view(g) or {}).get("done", 0)
+    C.check("sched：暂停后不再增长（%d→%d）" % (d0, d1), d1 - d0 < 256 * 1024, (d0, d1))
+    # 再打开 → 续完
+    C.rpc("sniffdl.queue.save", dict(q, schedule=_win(-1, 60)))
+    fin("sched 续传", g, "sc.bin", 90)
+    C.rpc("sniffdl.queue.remove", qid)
+
+
+TESTS = [("norange", t_norange), ("drop", t_drop), ("flaky503", t_flaky), ("etag", t_etag), ("sched", t_sched)]
 
 
 def main(argv):

@@ -284,7 +284,58 @@ def t_bucket_refund():
     check("令牌桶：被取消线程的透支已退还，新消费 500B@1000B/s 在 2s 内返回（实 %.2fs）" % el, el < 2.0, el)
 
 
+def t_token_auth():
+    """R109：界面令牌缺失被拒、aria2 rpc_token 缺失/错误被拒、正确放行并剥离。"""
+    from core import api as A
+    import rpc_server as R
+    try:
+        A.dispatch(None, "sniffdl.snapshot", [], {})
+        ok = False
+    except Exception as e:
+        ok = getattr(e, "code", None) == -32001
+    check("接口：无界面令牌调用受保护方法被拒(-32001)", ok)
+    check("接口：未知方法返回 NotImplemented", A.dispatch(None, "sniffdl.nope", [], {"ui": True}) is NotImplemented)
+    check("接口：ping 无需令牌可注册", "sniffdl.ping" in A.methods())
+    srv = R.RpcServer.__new__(R.RpcServer)
+    srv.token = "abc"
+    for name, prm, msg in (("缺失", [["u"]], "missing"), ("错误", ["token:bad", ["u"]], "wrong")):
+        try:
+            srv._check_token(prm)
+            got = ""
+        except R.RpcError as e:
+            got = e.message
+        check("rpc_token %s 被拒" % name, msg in got, got)
+    check("rpc_token 正确则剥离首位", srv._check_token(["token:abc", ["u"]]) == [["u"]])
+    srv.token = ""
+    check("无 rpc_token 时剥离客户端习惯性 token:xxx", srv._check_token(["token:zzz", ["u"]]) == [["u"]])
+    check("无 rpc_token 时普通参数原样", srv._check_token([["u"]]) == [["u"]])
+
+
+def t_path_traversal():
+    """R112：压缩包越界路径被拒、解压不写出目标目录；safe_name 清洗分隔符。"""
+    import zipfile, tempfile
+    from core import postactions as PA
+    d = tempfile.mkdtemp(prefix="trav_")
+    zp = os.path.join(d, "evil.zip")
+    with zipfile.ZipFile(zp, "w") as z:
+        z.writestr("ok.txt", "x")
+        z.writestr("../escape.txt", "boom")
+    ok, dest, msg = PA.extract(zp, log=lambda *a: None)
+    check("越界 zip 解压被拒", not ok, msg)
+    check("越界文件没写到目标目录之外", not os.path.exists(os.path.join(d, "escape.txt")))
+    zp2 = os.path.join(d, "good.zip")
+    with zipfile.ZipFile(zp2, "w") as z:
+        z.writestr("sub/a.txt", "x")
+    ok2, dest2, _ = PA.extract(zp2, log=lambda *a: None)
+    check("正常 zip 仍可解压", ok2 and os.path.exists(os.path.join(dest2, "sub", "a.txt")))
+    import video_downloader as V
+    n = V.safe_name("..\\..\\a/b:c*?.txt")
+    check("safe_name 去掉路径分隔符与非法字符: %r" % n, not any(c in n for c in '/\\:*?'), n)
+
+
 def main():
+    t_path_traversal()
+    t_token_auth()
     t_platform_util()
     t_bt_exclude()
     t_kill_aria2c_under()

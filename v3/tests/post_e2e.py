@@ -34,6 +34,7 @@ LOG = []           # (path, method, has_range, body)
 LK = threading.Lock()
 FILES = {}
 USED = set()
+HDRS = []
 
 
 def mk(name, size):
@@ -71,6 +72,8 @@ class H(BaseHTTPRequestHandler):
             return self._empty(303, {"Location": "/g/" + name})
         if kind == "r307":
             return self._empty(307, {"Location": "/p/" + name})
+        if kind == "r308":
+            return self._empty(308, {"Location": "/ph/" + name})
         if kind == "err":
             return self._empty(500)
         if name not in FILES:
@@ -78,11 +81,17 @@ class H(BaseHTTPRequestHandler):
         if kind == "g":
             if meth != "GET":
                 return self._empty(405)
-        elif kind in ("p", "once", "pa", "pu", "pn"):
+        elif kind in ("p", "once", "pa", "pu", "pn", "ph", "pq", "pi"):
             if meth != "POST":
                 return self._empty(405)
             if body != BODY or "x-www-form-urlencoded" not in (self.headers.get("Content-Type") or ""):
                 return self._empty(400)
+            if kind == "ph":
+                with LK:
+                    HDRS.append({k.lower(): v for k, v in self.headers.items()})
+                if (self.headers.get("Cookie") or "") != "sid=abc123; lang=zh" or \
+                        (self.headers.get("Referer") or "") != "http://127.0.0.1/page":
+                    return self._empty(403)
             if kind == "once":
                 with LK:
                     if name in USED:
@@ -106,6 +115,10 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Disposition", 'attachment; filename="report_ascii.csv"')
         elif kind == "pu":
             self.send_header("Content-Disposition", "attachment; filename=\"fallback.xlsx\"; filename*=UTF-8''%E6%8A%A5%E8%A1%A8%E5%AF%BC%E5%87%BA.xlsx")
+        if kind == "pq":
+            self.send_header("Content-Disposition", 'attachment; filename="a b;c.txt"')
+        elif kind == "pi":
+            self.send_header("Content-Disposition", "inline; filename*=UTF-8''%E6%95%B0%E6%8D%AE%2001.csv")
         self.send_header("Content-Length", str(z - a + 1))
         if part:
             self.send_header("Content-Range", "bytes %d-%d/%d" % (a, z, total))
@@ -246,8 +259,41 @@ def t_icpt():
     C.check("icpt：全 POST 且带请求体、无 GET", rs and all(r[1] == "POST" and r[3] == BODY for r in rs), rs[:4])
 
 
+def addh(kind, name, hdr):
+    info = {"url": url(kind, name), "dir": OUT, "method": "POST", "post_data": BODY, "headers": hdr}
+    r = C.rpc("sniffdl.task.add", info)
+    return r.get("gid") if isinstance(r, dict) else r
+
+
+def t_hdr():
+    """Cookie/Referer 随 POST 转发（含 308 重定向后）、Content-Disposition 变体"""
+    base = {"Content-Type": "application/x-www-form-urlencoded", "Cookie": "sid=abc123; lang=zh",
+            "Referer": "http://127.0.0.1/page"}
+    mk("hdr1.bin", 3 * MB)
+    gid = addh("ph", "hdr1.bin", base)
+    done_ok("hdr 直连", gid, "hdr1.bin")
+    with LK:
+        hs = list(HDRS)
+    C.check("hdr：每个请求都带 Cookie", hs and all(h.get("cookie") == "sid=abc123; lang=zh" for h in hs), hs[:2])
+    C.check("hdr：每个请求都带 Referer", hs and all(h.get("referer") == "http://127.0.0.1/page" for h in hs), hs[:2])
+    C.check("hdr：Content-Type 保持表单", hs and all("x-www-form-urlencoded" in h.get("content-type", "") for h in hs), hs[:2])
+    mk("hdr2.bin", 3 * MB)
+    gid = addh("r308", "hdr2.bin", base)
+    done_ok("hdr 308 后", gid, "hdr2.bin")
+    rs = reqs("/hdr2.bin")
+    C.check("hdr：308 后仍是 POST 且带请求体", len(rs) >= 2 and all(r[1] == "POST" and r[3] == BODY for r in rs), rs[:4])
+    for kind, key, want in (("pq", "hdq", "a b;c.txt"), ("pi", "hdi", "数据 01.csv")):
+        mk(key, 2 * MB)
+        gid = addn(kind, key)
+        v = C.wait_status(gid, ("complete", "error"), 60)
+        p = os.path.join(OUT, want)
+        C.check("hdr 文件名 %s → %s" % (kind, want),
+                bool(v and v["status"] == "complete" and os.path.isfile(p) and C.sha_file(p) == FILES[key][1]),
+                (v, os.listdir(OUT)))
+
+
 TESTS = [("multi", t_multi), ("once", t_once), ("r303", t_r303), ("r307", t_r307), ("aria2", t_aria2), ("icpt", t_icpt), ("name", t_name),
-         ("fail", t_fail)]
+         ("fail", t_fail), ("hdr", t_hdr)]
 
 
 def main(argv):
