@@ -37,6 +37,10 @@ const TOKEN = arg('token', crypto.randomBytes(12).toString('hex'));
 const HIDDEN = arg('hidden', '') === '1';
 const NO_MAIN = arg('no-main', '') === '1';
 const NO_PET = arg('no-pet', '') === '1';
+// 只当桌宠（旧版 tk 主程序 / pywebview 宿主经 pet_bridge 拉起）：不起内核、不开主窗。
+// Windows 实测：以前这里也会 startCore() → 一个无头内核拉桌宠，桌宠又拉起第二个完整 SniffDL（默认 runtime.json、占 6800），
+// 残留到后面的测试里把 BT 孤儿判成「有主」、和新宿主抢端口。
+const PET_ONLY = arg('pet-only', '') === '1' || arg('no-core', '') === '1';
 const SCALE_STEP = [0.6, 0.75, 0.9, 1.0, 1.15, 1.3, 1.5, 1.75];
 let scaleIdx = 3;
 let skin = 'da-feiyu';
@@ -483,8 +487,9 @@ if (GOT_LOCK) app.whenReady().then(async () => {
     tray.on('double-click', showMain);
   } catch (e) { dlog('tray err ' + e); }
   if (!NO_PET) await startPetCtrl();
-  startCore();
-  createMain(!NO_MAIN);
+  if (PET_ONLY) dlog('pet-only: 不起内核、不开主窗');
+  else startCore();
+  if (!PET_ONLY) createMain(!NO_MAIN);
   if (!NO_PET) createWindow();
   buildTray();
   setInterval(() => { if (core && core.info && !quitting) refreshTurtle(); }, 15000);   // 界面里切了乌龟模式 → 托盘勾选跟上

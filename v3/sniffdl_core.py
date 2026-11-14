@@ -42,7 +42,13 @@ def main(argv=None):
     ap.add_argument("--parent-pid", type=int, default=0)
     ap.add_argument("--data-dir", default=os.environ.get("SNIFFDL_DATA_DIR", ""),
                     help="配置/任务库/日志放这里（默认程序目录；测试用临时目录隔离）")
+    ap.add_argument("--selftest", action="store_true", help="自检：隔离数据目录起内核→跑 sniffdl.selftest→打印→退出（0=全过）")
     a = ap.parse_args(argv)
+    if a.selftest:
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="sdl_selftest_")
+        a.data_dir = a.data_dir or tmp
+        a.runtime = os.path.join(tmp, "runtime.json")
 
     from core import runtime as RT
     old = RT.read(a.runtime)
@@ -73,6 +79,18 @@ def main(argv=None):
     eng = Engine(runtime_path=a.runtime, ui_token=a.ui_token or None, host=a.host,
                  ui_dir=a.ui_dir if os.path.isdir(a.ui_dir) else None)
     eng.start(port=a.port or None)
+
+    if a.selftest:
+        from core import api as _api
+        try:
+            res = _api.REGISTRY["sniffdl.selftest"](eng, {}) if hasattr(_api, "REGISTRY") else _api._selftest(eng, {})
+        except Exception as ex:
+            res = {"ok": False, "items": [{"name": "自检执行", "ok": False, "detail": str(ex)[:200]}]}
+        for i in res["items"]:
+            print(("OK   " if i["ok"] else "FAIL ") + i["name"] + "  " + i.get("detail", ""))
+        print("SELFTEST " + ("PASS" if res["ok"] else "FAIL"))
+        eng.shutdown()
+        return 0 if res["ok"] else 1
 
     stop = threading.Event()
 

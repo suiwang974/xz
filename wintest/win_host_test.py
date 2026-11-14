@@ -82,6 +82,65 @@ def handshake(T, timeout=90, not_pid=None):
     return wait(f, timeout, 0.5)
 
 
+def _proc_table():
+    try:
+        import psutil
+        out = []
+        for p in psutil.process_iter(["pid", "ppid", "name", "cmdline", "cwd"]):
+            n = (p.info["name"] or "").lower()
+            if n.startswith(("electron", "python", "aria2c", "sniffdl")):
+                out.append((p.info["pid"], p.info["ppid"], n, " ".join(p.info["cmdline"] or [])[-220:]))
+        return out
+    except Exception as e:
+        return ["psutil err %r" % e]
+
+
+def _diag(T, el, tag):
+    """失败时把真机证据打出来：aria2c 在哪、内核怎么找 aria2c、宿主/内核日志尾部、进程表、端口占用。"""
+    import glob
+    print("==== 诊断 %s ====" % tag, flush=True)
+    print("SNIFFDL_ARIA2C=%r exists=%s  which(aria2c)=%r  electron poll=%r" % (
+        ARIA2C, bool(ARIA2C) and os.path.isfile(ARIA2C), shutil.which("aria2c"), el.poll() if el else None), flush=True)
+    print("runtime.json:", read_rt(T), flush=True)
+    for row in _proc_table():
+        print("  proc", row, flush=True)
+    try:
+        import psutil
+        ls = [(c.laddr.port, c.pid) for c in psutil.net_connections("inet") if c.status == "LISTEN" and c.laddr.port in (6800, 6801)]
+        print("LISTEN 6800/6801:", ls, flush=True)
+    except Exception as e:
+        print("net err", repr(e), flush=True)
+    files = glob.glob(os.path.join(T, "electron_*.out")) + glob.glob(os.path.join(T, "pet", "*.log")) + \
+        glob.glob(os.path.join(T, "data", "*.log")) + glob.glob(os.path.join(T, "data", "logs", "*.log"))
+    for f in files:
+        try:
+            t = open(f, encoding="utf-8", errors="replace").read()
+            print("---- %s (%d bytes) 末 2500 ----\n%s" % (f, len(t), t[-2500:]), flush=True)
+        except Exception as e:
+            print("read", f, repr(e), flush=True)
+    try:     # 内核找 aria2c 的结果（与宿主同环境：PATH 已前置 aria2c 目录）
+        r = subprocess.run([sys.executable, "-c", "import sys,os;sys.path.insert(0,%r);os.chdir(%r);import video_downloader as V;"
+                            "print('resolve_aria2c=',V.resolve_aria2c({}),'ARIA2C=',V.ARIA2C)" % (V3, V3)],
+                           capture_output=True, text=True, timeout=60, errors="replace",
+                           env=dict(os.environ, PATH=(os.path.dirname(ARIA2C) + os.pathsep if ARIA2C else "") + os.environ.get("PATH", "")))
+        print("内核找 aria2c：", (r.stdout + r.stderr).strip()[-600:], flush=True)
+    except Exception as e:
+        print("resolve err", repr(e), flush=True)
+
+
+def _clean_stray(tag):
+    """前面步骤残留的 SniffDL（electron 宿主 / 内核 / aria2c）会和本测试抢 6800、单实例，先打印再清掉。"""
+    rows = [r for r in _proc_table() if isinstance(r, tuple) and (r[2].startswith(("electron", "aria2c"))
+                                                                    or CORE_SUB in r[3] or "--core" in r[3])]
+    rows = [r for r in rows if r[0] != os.getpid()]
+    if rows:
+        print("[%s] 清掉残留进程：" % tag, flush=True)
+        for r in rows:
+            print("   ", r, flush=True)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(r[0])], capture_output=True)
+        time.sleep(1.5)
+
+
 def find_page(br, sub):
     for c in br.contexts:
         for pg in c.pages:
@@ -111,6 +170,7 @@ def _dump_cdp_diag(T, el, cdp, lg):
 
 
 def run_a():
+    _clean_stray("A 开始前")
     T = os.path.join(BASE, "A")
     prep(T, "下载 输出")
     srv, fport, sha = make_file_server(8 * 1024 * 1024, delay=0.03, name="大肥鱼_样例.bin")
@@ -124,6 +184,7 @@ def run_a():
         info = handshake(T)
         R.ok("A1 内核握手（runtime.json + ping）", info, info and {"port": info["port"], "pid": info["pid"]})
         if not info:
+            _diag(T, el, "A1")
             return None
         core_pid = info["pid"]
         lg = os.path.join(T, "pet", "pet_electron.log")
@@ -192,15 +253,27 @@ def run_a():
             # 直链默认走自研动态分片引擎（speed_engine=auto），不会起 aria2c.exe；有进度即证明引擎在跑
             ar = wait(lambda: procs("aria2c.exe") or ui.evaluate("[...window.__sdl.S.tasks.values()].some(t => t.done > 0 || t.status === 'complete')"), 20)
             R.ok("A10 下载中引擎在跑（自研引擎有进度，或 aria2c.exe 已拉起）", ar, ar)
+            if not ar:
+                _diag(T, el, "A10")
             tl.seg("下载中（等待）", 6)
             time.sleep(2)
             shot_page(ui, "main_downloading.png")
             done = wait(lambda: ui.evaluate("[...window.__sdl.S.tasks.values()].some(t => t.status === 'complete')"), 90, 0.5)
             tl.seg("下载完成")
             R.ok("A11 下载完成", done, ui.evaluate("JSON.stringify([...window.__sdl.S.tasks.values()].map(t=>[t.status,t.done,t.total,t.err]))"))
+            if not done:
+                _diag(T, el, "A11")
             outd = os.path.join(T, "下载 输出")
             files = [os.path.join(d, f) for d, _, fs in os.walk(outd) for f in fs]
-            R.ok("A12 文件落在中文路径且大小正确", any(os.path.getsize(f) == 8 * 1024 * 1024 for f in files), files)
+            a12 = any(os.path.getsize(f) == 8 * 1024 * 1024 for f in files)
+            R.ok("A12 文件落在中文路径且大小正确", a12, files)
+            if not a12:
+                print("A12 诊断：outdir=%r 存在=%s  任务=%s" % (outd, os.path.isdir(outd), ui.evaluate(
+                    "JSON.stringify([...window.__sdl.S.tasks.values()].map(t=>[t.name,t.dir,t.path,t.status]))")), flush=True)
+                for d, _, fs in os.walk(T):
+                    for f in fs:
+                        if not f.endswith((".log", ".out", ".json")):
+                            print("   file", os.path.join(d, f), flush=True)
             if files:
                 import hashlib
                 f0 = max(files, key=os.path.getsize)
@@ -364,6 +437,7 @@ def run_a():
 
 
 def run_b():
+    _clean_stray("B 开始前")
     T = os.path.join(BASE, "B")
     prep(T, "out")
     srv, fport, _ = make_file_server(64 * 1024 * 1024, delay=0.08, name="slow.bin")
@@ -373,6 +447,7 @@ def run_b():
         info = handshake(T)
         R.ok("B1 内核握手", info)
         if not info:
+            _diag(T, el, "B1")
             return
         core_pid = info["pid"]
         r = rpc(info["port"], "sniffdl.task.add", {"url": "http://127.0.0.1:%d/slow.bin" % fport, "start_now": True}, token=info["ui_token"])
@@ -385,6 +460,8 @@ def run_b():
                 return None
         ar = wait(_prog, 25)
         R.ok("B3 下载引擎在跑（任务有进度，或 aria2c.exe 已拉起）", ar, ar)
+        if not ar:
+            _diag(T, el, "B3")
         time.sleep(3)
         kill = subprocess.run(["taskkill", "/F", "/PID", str(el.pid)], capture_output=True, text=True, errors="replace")
         t0 = time.time()

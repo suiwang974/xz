@@ -126,11 +126,20 @@ def t_bt_orphan_real():
     os.chdir(V3)
     import video_downloader as V
     # 前面步骤（ui_smoke 等）可能留着别的 SniffDL 内核在跑，它们会被当成「主人」→ 孤儿不成立。先清场并打印
-    for pid, n, cl in V.list_processes():
-        if pid != os.getpid() and n.lower().startswith(("python", "electron")) and V.is_sniffdl_owner_cmdline(cl):
-            print("清掉残留 SniffDL 进程 pid=%d %s" % (pid, cl[-160:]), flush=True)
+    # 先收 electron.exe（宿主会把被杀的内核自动重启一次 → 只杀内核会冒出新的「主人」），再循环清内核直到没有
+    for _ in range(5):
+        left = []
+        for pid, n, cl in V.list_processes():
+            if pid == os.getpid():
+                continue
+            if n.lower().startswith("electron") or (n.lower().startswith("python") and V.is_sniffdl_owner_cmdline(cl)):
+                left.append((pid, n, cl))
+        if not left:
+            break
+        for pid, n, cl in sorted(left, key=lambda x: not x[1].lower().startswith("electron")):
+            print("清掉残留 SniffDL 进程 pid=%d %s %s" % (pid, n, cl[-160:]), flush=True)
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
-    time.sleep(1)
+        time.sleep(1.5)
     app = V.App.__new__(V.App)
     logs = []
     app.log = lambda m: logs.append(m)

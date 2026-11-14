@@ -719,7 +719,8 @@ class RpcServer:
         if method in ("aria2.shutdown", "aria2.forceShutdown"):
             return "OK"            # 外部前端无权关掉 SniffDL 本体
         if method == "system.listNotifications":
-            return []
+            return ["aria2.onDownloadStart", "aria2.onDownloadPause", "aria2.onDownloadStop",
+                    "aria2.onDownloadComplete", "aria2.onDownloadError", "aria2.onBtDownloadComplete"]
 
         if method == "aria2.tellActive":
             return [_norm_struct(t) for t in b.rpc_list({"active"})]
@@ -770,7 +771,7 @@ class RpcServer:
             wait = b.rpc_list({"waiting"})
             stop = b.rpc_list({ST_COMPLETE, ST_ERROR, ST_PAUSED})
             return {"numActive": str(len(act)), "numWaiting": str(len(wait)),
-                    "numStopped": str(len(stop)),
+                    "numStopped": str(len(stop)), "numStoppedTotal": str(len(stop)),
                     "downloadSpeed": _sum(act, "downloadSpeed") or "0",
                     "uploadSpeed": _sum(act, "uploadSpeed") or "0",
                     "totalDownloadLength": "0", "totalUploadLength": "0"}
@@ -903,7 +904,10 @@ class RpcServer:
             return b.rpc_list_models(*(params or []))
 
         if method == "system.listMethods":
-            return ["aria2.addUri", "aria2.addTorrent", "aria2.remove", "aria2.forceRemove",
+            return ["aria2.addUri", "aria2.addTorrent", "aria2.addMetalink", "aria2.forcePause",
+                    "aria2.changeOption", "aria2.changeGlobalOption", "aria2.getGlobalOption",
+                    "aria2.getGlobalStat", "aria2.getVersion", "aria2.getSessionInfo",
+                    "aria2.removeDownloadResult", "system.listMethods", "aria2.remove", "aria2.forceRemove",
                     "aria2.tellStatus", "aria2.getUris", "aria2.getFiles", "aria2.getPeers",
                     "aria2.getServers", "aria2.getOption", "aria2.changePosition",
                     "aria2.unpauseAll", "aria2.forcePauseAll", "aria2.purgeDownloadResult",

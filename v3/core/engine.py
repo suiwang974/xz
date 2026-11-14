@@ -337,7 +337,7 @@ class Engine(V.App):
                 self.pet_live = True
                 if not want:
                     self._pet.visible(False)
-            elif want and self.host != "electron":
+            elif want and self.host not in ("electron", "none"):   # 无头内核（--host none：CLI/测试/服务）不弹桌宠窗
                 self._pet = pet_bridge.PetBridge(port=int(self.cfg.get("pet_port") or 6801), wake=True)
                 self._pet.start()
                 self.pet_live = True

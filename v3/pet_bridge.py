@@ -81,8 +81,9 @@ class PetBridge:
             os.remove(STATE_FILE)
         except OSError:
             pass
+        # --pet-only：v3 Electron 宿主只当桌宠，不再自己拉内核/主窗（否则会冒出第二个完整 SniffDL）
         cmd = [exe, app_dir, "--port", str(self.port), "--token", self.token,
-               "--state", STATE_FILE]
+               "--state", STATE_FILE, "--pet-only", "1"]
         if not _IS_WIN:
             cmd.insert(1, "--no-sandbox")         # 仅 Linux 验收用：容器里没有 suid chrome-sandbox
         if not self.wake:

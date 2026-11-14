@@ -19,3 +19,6 @@
 18. 磁力链接按 bt_exclude 排除广告文件（11-13 新增）：元数据到手后自动只选正片。对应 core_e2e magnet 组。
 19. 外挂引擎与提示音（11-13 新增）：设置里填 N_m3u8DL-RE / BBDown 路径后 m3u8、B 站链接走外挂，失败回落内置；任务完成响提示音；设置页「工具与诊断」可打开保存目录/日志、运行自检。对应 tests/sidecar_test.py、ui_sound.py、ui_tools.py。
 20. 网盘直链 v3 子集（11-13 新增）：mock 网盘上 LinkSwift/panlinker 组包推送、缺 Cookie 报 412 原因、过期链接报「过期」、粘贴直链自动补同步 Cookie。对应 tools/netdisk_e2e.py --v3（Windows 上同命令复跑）。
+21. POST 接管补强（11-14 新增）：带 Cookie/Referer 的 POST、308 重定向后仍 POST、Content-Disposition 引号含分号/inline filename*。对应 tests/post_e2e.py hdr 组。
+22. 计划任务真触发（11-14 新增）：计划队列窗口外不开工、开启自动下载、关闭暂停、再开续完 sha 一致。对应 tests/resume_edge_e2e.py sched 组。
+23. 嗅探分类与去重（11-14 新增）：m3u8/mpd/视频/音频分类，图片/json 不误收，同地址只记一条。对应 tests/ext_sniff_classify.py。

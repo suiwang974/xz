@@ -693,7 +693,13 @@ class DownloadTask:
         while self._speed_hist and now - self._speed_hist[0][0] > REF_WINDOW:
             self._speed_hist.popleft()
         vals = [s for _, s in self._speed_hist]
-        return statistics.median(vals) if vals else 0.0
+        if not vals:
+            return 0.0
+        if len(vals) < 4:
+            return statistics.median(vals)
+        vals.sort()
+        # 取 70 分位而不是中位数：慢连接占多数时中位数会被拖垮，慢连接就永远踢不掉
+        return max(statistics.median(vals), vals[int(len(vals) * 0.7)])
 
     def _pick_victim(self):
         """返回 (受害 worker, 本次最小切分)。先按 min_split 找；找不到再进收尾模式：
